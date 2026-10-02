@@ -139,8 +139,16 @@ $$;
 -- Diese Policy lässt einen Nutzer nur dem Kanal seines EIGENEN Sitzes
 -- beitreten (lesen UND senden) — ein anderer Sitz im selben Tisch ist
 -- ein anderer Topic-Name und damit ein anderer Policy-Check.
-alter table realtime.messages enable row level security;
-
+--
+-- WICHTIG: KEIN "alter table realtime.messages enable row level security"
+-- davor ausführen! RLS ist auf dieser Tabelle in Supabase bereits aktiv,
+-- und die Tabelle gehört der internen Rolle supabase_realtime_admin, nicht
+-- "postgres" — ein ALTER TABLE darauf scheitert mit "must be owner of
+-- table messages" und reisst (in einer Transaktion) auch den darauf-
+-- folgenden create policy-Befehl mit. "postgres" darf auf dieser einen
+-- Tabelle zwar Policies erstellen (via supautils-Extension), aber keine
+-- ALTER TABLE-Befehle ausführen.
+-- Siehe https://supabase.com/docs/guides/troubleshooting/realtime-must-be-owner-of-table-messages
 create policy "online_poker_private_seat_channel" on realtime.messages
   for select using (
     extension = 'broadcast'
