@@ -679,7 +679,7 @@ function renderOnlineLobby(){
       <div class="session-row" onclick="openOnlineTable('${tb.id}')">
         <div class="meta">
           <div class="date">Blinds ${formatMoney(tb.small_blind)} / ${formatMoney(tb.big_blind)}</div>
-          <div class="sub">${occ}/2 Plätze besetzt · ${statusLabel}${mySeat!=null ? ' · Du sitzt auf Platz '+(mySeat.seat_no+1) : ''}</div>
+          <div class="sub">${occ}/${tb.seat_count||2} Plätze besetzt · ${statusLabel}${mySeat!=null ? ' · Du sitzt auf Platz '+(mySeat.seat_no+1) : ''}</div>
         </div>
         <div class="right" style="display:flex;align-items:center;gap:8px;">
           <span class="badge ${tb.status==='waiting' ? 'badge-open' : 'badge-closed'}">${statusLabel}</span>
@@ -702,7 +702,16 @@ function openNewOnlineTableModal(){
     <div class="modal-backdrop" onclick="if(event.target===this) closeModal()">
       <div class="modal">
         <h2>Neuer Online-Tisch</h2>
-        <p class="hint">Heads-up (2 Spieler), fixe Blinds. Turniere und mehr Spieler folgen später.</p>
+        <p class="hint">Automatisches Karten-Austeilen gibt es bisher nur im Heads-up (2 Sitze). Grössere Tische (6/10 Sitze) kannst du trotzdem anlegen — dort dienen Sitzplatz, Buy-ins und Stack als digitales Tracking für eure echte Partie, inkl. eurem Tisch-Layout; die Hände selbst tragt ihr dann wie gewohnt am Tisch aus.</p>
+        <div class="field-row">
+          <div class="field"><label>Sitzplätze</label>
+            <select id="ot-seatcount">
+              <option value="2" selected>Heads-up (2)</option>
+              <option value="6">6-Max</option>
+              <option value="10">10-Max</option>
+            </select>
+          </div>
+        </div>
         <div class="field-row">
           <div class="field"><label>Small Blind</label><input id="ot-sb" type="number" min="0" step="0.5" value="0.5"></div>
           <div class="field"><label>Big Blind</label><input id="ot-bb" type="number" min="0" step="0.5" value="1"></div>
@@ -718,8 +727,9 @@ function openNewOnlineTableModal(){
 async function createOnlineTable(){
   const sb_ = parseFloat(document.getElementById('ot-sb').value);
   const bb_ = parseFloat(document.getElementById('ot-bb').value);
+  const seatCount = parseInt(document.getElementById('ot-seatcount').value, 10);
   if(!(sb_ > 0) || !(bb_ > sb_)){ showToast('Big Blind muss grösser als Small Blind sein.'); return; }
-  const { error } = await sb.from('online_tables').insert({ club_id: currentClubId, small_blind: sb_, big_blind: bb_ });
+  const { error } = await sb.from('online_tables').insert({ club_id: currentClubId, small_blind: sb_, big_blind: bb_, seat_count: seatCount });
   if(error){ showToast('Fehler: ' + error.message); return; }
   closeModal();
   onlineLobbyLoaded = false;
@@ -994,39 +1004,54 @@ function renderOnlineTableView(){
   if(onlineMySeat == null) return renderOnlineSeatPicker(tbl);
   const hs = onlineHandState;
   const phase = hs ? hs.phase : 'waiting';
-  const myTurn = hs && hs.current_seat === onlineMySeat && ['preflop','flop','turn','river'].includes(phase);
+  const seatCount = tbl.seat_count || 2;
+  // Der automatische Karten-Dealer (start_hand/submit_action Edge Functions, deal_hand SQL-Funktion)
+  // ist bisher hartcodiert auf genau 2 Sitze (seat_no 0/1) — ein echter Multiway-Dealer mit Side-Pots
+  // und Mehrweg-Showdown ist ein eigenes, grösseres Stück Arbeit. Tische mit mehr Sitzen funktionieren
+  // schon jetzt als Sitzplatz-/Buy-in-/Stack-Tracker (reallyCloseOnlineTable kennt beliebig viele
+  // Sitze), aber "Hand starten" bleibt an dieser Stelle bewusst auf Heads-up beschränkt.
+  const isHeadsUpEngine = seatCount === 2;
   const oppSeat = onlineMySeat === 0 ? 1 : 0;
   const myBet = hs && hs.bets ? (hs.bets[String(onlineMySeat)] || 0) : 0;
   const oppBet = hs && hs.bets ? (hs.bets[String(oppSeat)] || 0) : 0;
   const toCall = oppBet - myBet;
+  const myTurn = isHeadsUpEngine && hs && hs.current_seat === onlineMySeat && ['preflop','flop','turn','river'].includes(phase);
   const mySeatRow = tbl.seats.find(s => s.seat_no === onlineMySeat);
-  const oppSeatRow = tbl.seats.find(s => s.seat_no === oppSeat);
+  const oppSeatRow = isHeadsUpEngine ? tbl.seats.find(s => s.seat_no === oppSeat) : null;
+  const seatedRows = tbl.seats.filter(s => s.user_id);
   const isFinished = tbl.status === 'finished';
-  const canStart = !isFinished && (!hs || phase === 'done' || phase === 'waiting') && mySeatRow && oppSeatRow && mySeatRow.user_id && oppSeatRow.user_id;
-  const canClose = !isFinished && (!hs || phase === 'done' || phase === 'waiting') && mySeatRow && oppSeatRow && mySeatRow.user_id && oppSeatRow.user_id && mySeatRow.player_id && oppSeatRow.player_id;
+  const canStart = isHeadsUpEngine && !isFinished && (!hs || phase === 'done' || phase === 'waiting') && mySeatRow && oppSeatRow && mySeatRow.user_id && oppSeatRow.user_id;
+  const canClose = !isFinished && (!hs || phase === 'done' || phase === 'waiting') && seatedRows.length >= 2 && seatedRows.every(s => s.player_id);
   const revealOpp = hs && hs.hole_cards && (phase === 'showdown' || phase === 'done');
 
   // Eigenes Table-Designer-Layout statt generischer Oval-Positionen — identisch zum
   // Handerfassungsmodus (dort: getActiveLayout(sessionId)/getSeatSlotsForRender).
   // Online-Tische haben keine echte Session-id, darum per layoutOverride direkt das
   // gewählte Layout (online_tables.layout_id) reinreichen, statt über sessionLayoutMap
-  // zu gehen. Nur Layouts mit exakt 2 Sitzen sind sinnvoll (siehe Layout-Auswahl unten).
-  const heads2Layouts = layoutTemplates.filter(lt => lt.seatCount === 2);
-  const chosenLayout = tbl.layout_id ? heads2Layouts.find(lt => lt.id === tbl.layout_id) || null : null;
-  const slots = getSeatSlotsForRender(2, null, chosenLayout);
-  const oppSlot = slots[oppSeat] || slots[0];
-  const mySlot = slots[onlineMySeat] || slots[1];
-  // getSeatSlotsForRender(2, null, chosenLayout) already passes chosenLayout explicitly as
-  // layoutOverride, so a null chosenLayout correctly falls through to the generic seatPositions(2)
+  // zu gehen. Nur Layouts mit genau so vielen Sitzen wie der Tisch sind sinnvoll.
+  const matchingLayouts = layoutTemplates.filter(lt => lt.seatCount === seatCount);
+  const chosenLayout = tbl.layout_id ? matchingLayouts.find(lt => lt.id === tbl.layout_id) || null : null;
+  const slots = getSeatSlotsForRender(seatCount, null, chosenLayout);
+  // getSeatSlotsForRender(seatCount, null, chosenLayout) already passes chosenLayout explicitly as
+  // layoutOverride, so a null chosenLayout correctly falls through to the generic seatPositions(n)
   // circle inside that function (sessionId=null there is harmless). tableFeltStyleAttr() is
   // different: it does `layoutOverride || getActiveLayout()`, and a falsy chosenLayout would make it
   // fall back to getActiveLayout() with NO sessionId — which can resolve to whatever layout is active
   // for an unrelated Hands-tab session (handsSelectedSessionId). Passing {} instead of null below
   // keeps tableFeltStyleAttr on its "no custom layout" default-felt branch without that leak.
 
+  const seatsHtml = Array.from({length: seatCount}, (_, seatNo) => {
+    const seatRow = tbl.seats.find(s => s.seat_no === seatNo);
+    const isMe = seatNo === onlineMySeat;
+    const bet = isHeadsUpEngine && hs && hs.bets ? (hs.bets[String(seatNo)] || 0) : 0;
+    const revealThis = isHeadsUpEngine ? revealOpp : false;
+    return onlinePokerSeatHtml(slots[seatNo], seatRow, seatNo, isHeadsUpEngine ? hs : null, revealThis, isMe)
+      + (seatRow && bet > 0 ? betLineChipHtml(slots[seatNo], bet, null) : '');
+  }).join('');
+
   return `
     <div class="view-head">
-      <div><h1>Online-Tisch</h1><p class="lede" style="margin-bottom:0">Blinds ${formatMoney(tbl.small_blind)} / ${formatMoney(tbl.big_blind)} · Hand #${hs ? hs.hand_no||0 : 0}${isFinished ? ' · Tisch abgeschlossen' : ''}</p></div>
+      <div><h1>Online-Tisch</h1><p class="lede" style="margin-bottom:0">Blinds ${formatMoney(tbl.small_blind)} / ${formatMoney(tbl.big_blind)} · ${seatCount} Sitze${isHeadsUpEngine ? ` · Hand #${hs ? hs.hand_no||0 : 0}` : ''}${isFinished ? ' · Tisch abgeschlossen' : ''}</p></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" onclick="backToOnlineLobby()">← Lobby</button>
         ${!isFinished ? `<button class="btn btn-ghost btn-sm" onclick="addOnlineBuyin()">+ Nachkaufen</button>` : ''}
@@ -1034,23 +1059,21 @@ function renderOnlineTableView(){
       </div>
     </div>
     ${isFinished ? `<div class="panel" style="text-align:center;background:var(--btn-secondary-bg);"><strong>Dieser Tisch ist geschlossen.</strong> Das Ergebnis wurde als Session in die Statistik übernommen.</div>` : ''}
+    ${!isHeadsUpEngine ? `<div class="panel" style="text-align:center;color:#999;font-size:13px;">Dieser Tisch hat ${seatCount} Sitze — automatisches Karten-Austeilen gibt es bisher nur im Heads-up. Nutzt die App hier als Sitzplatz-/Buy-in-Tracker und spielt die Hände am echten Tisch; beim Schliessen übernimmt "Tisch schliessen" die Stände aller besetzten Plätze in die Statistik.</div>` : ''}
     <div class="panel table-pane" style="margin-bottom:16px;padding:0;position:relative;">
       <div class="poker-table-oval" style="${tableFeltStyleAttr(chosenLayout || {})}">
-        ${onlinePokerSeatHtml(oppSlot, oppSeatRow, oppSeat, hs, revealOpp, false)}
-        ${onlinePokerSeatHtml(mySlot, mySeatRow, onlineMySeat, hs, revealOpp, true)}
-        ${oppSeatRow && oppBet > 0 ? betLineChipHtml(oppSlot, oppBet, null) : ''}
-        ${mySeatRow && myBet > 0 ? betLineChipHtml(mySlot, myBet, null) : ''}
+        ${seatsHtml}
         <div class="pot-center" style="${chosenLayout && chosenLayout.potX!=null && chosenLayout.potY!=null ? `left:${chosenLayout.potX}%;top:${chosenLayout.potY}%;transform:translate(-50%,-50%);` : ''}">
-          ${hs && hs.board && hs.board.length ? `<div class="board-cards">${hs.board.map(cardChipHtml).join('')}</div>` : ''}
-          <div class="amt">${fmtChipPlain(hs ? hs.pot : 0)}</div>
+          ${isHeadsUpEngine && hs && hs.board && hs.board.length ? `<div class="board-cards">${hs.board.map(cardChipHtml).join('')}</div>` : ''}
+          <div class="amt">${fmtChipPlain(isHeadsUpEngine && hs ? hs.pot : 0)}</div>
           <div class="lbl">Pot</div>
         </div>
       </div>
-      ${!isFinished && heads2Layouts.length ? `
+      ${!isFinished && matchingLayouts.length ? `
       <div style="position:absolute;bottom:16px;left:16px;z-index:8;">
         <select onchange="setOnlineTableLayout('${tbl.id}', this.value||null)" style="font-size:12px;padding:5px 6px;border-radius:6px;" title="Tisch-Layout für diesen Online-Tisch">
           <option value="">Standard-Tisch</option>
-          ${heads2Layouts.map(lt => `<option value="${lt.id}" ${chosenLayout && chosenLayout.id===lt.id ? 'selected':''}>${escapeHtml(lt.name)}</option>`).join('')}
+          ${matchingLayouts.map(lt => `<option value="${lt.id}" ${chosenLayout && chosenLayout.id===lt.id ? 'selected':''}>${escapeHtml(lt.name)}</option>`).join('')}
         </select>
       </div>` : ''}
     </div>
@@ -1058,20 +1081,21 @@ function renderOnlineTableView(){
       ${canStart ? `<button class="btn btn-primary" onclick="callStartHand()">${hs && hs.hand_no ? 'Nächste Hand starten' : 'Hand starten'}</button>` : ''}
       ${canClose ? `<button class="btn btn-secondary" onclick="closeOnlineTable()">Tisch schliessen &amp; Ergebnis übernehmen</button>` : ''}
     </div>` : ''}
-    ${(!hs || !hs.hand_no) && mySeatRow && oppSeatRow && mySeatRow.user_id && oppSeatRow.user_id && (!mySeatRow.player_id || !oppSeatRow.player_id) ? `<div class="panel" style="text-align:center;color:#999;font-size:13px;">Hinweis: Ohne verknüpften Spieler (siehe Players-Tab) kann dieser Tisch später nicht in die Statistik übernommen werden.</div>` : ''}
-    ${hs && hs.hand_over !== undefined && hs.hand_over && hs.winner_seat !== undefined ? `<div class="panel" style="text-align:center;"><strong>${hs.winner_seat === null ? 'Split Pot' : (hs.winner_seat === onlineMySeat ? 'Du gewinnst die Hand!' : 'Gegner gewinnt die Hand.')}</strong></div>` : ''}
-    ${myTurn ? renderOnlineActionBar(toCall, mySeatRow ? mySeatRow.stack : 0, hs) : (hs && ['preflop','flop','turn','river'].includes(phase) ? `<div class="panel" style="text-align:center;color:#999;">Warte auf Gegner…</div>` : '')}
+    ${(!hs || !hs.hand_no) && seatedRows.length >= 2 && !seatedRows.every(s => s.player_id) ? `<div class="panel" style="text-align:center;color:#999;font-size:13px;">Hinweis: Ohne verknüpften Spieler (siehe Players-Tab) kann dieser Tisch später nicht in die Statistik übernommen werden.</div>` : ''}
+    ${isHeadsUpEngine && hs && hs.hand_over !== undefined && hs.hand_over && hs.winner_seat !== undefined ? `<div class="panel" style="text-align:center;"><strong>${hs.winner_seat === null ? 'Split Pot' : (hs.winner_seat === onlineMySeat ? 'Du gewinnst die Hand!' : 'Gegner gewinnt die Hand.')}</strong></div>` : ''}
+    ${myTurn ? renderOnlineActionBar(toCall, mySeatRow ? mySeatRow.stack : 0, hs) : (isHeadsUpEngine && hs && ['preflop','flop','turn','river'].includes(phase) ? `<div class="panel" style="text-align:center;color:#999;">Warte auf Gegner…</div>` : '')}
   `;
 }
 
 function renderOnlineSeatPicker(tbl){
+  const seatCount = tbl.seat_count || 2;
   return `
     <div class="view-head">
-      <div><h1>Online-Tisch</h1><p class="lede" style="margin-bottom:0">Blinds ${formatMoney(tbl.small_blind)} / ${formatMoney(tbl.big_blind)}</p></div>
+      <div><h1>Online-Tisch</h1><p class="lede" style="margin-bottom:0">Blinds ${formatMoney(tbl.small_blind)} / ${formatMoney(tbl.big_blind)} · ${seatCount} Sitze</p></div>
       <button class="btn btn-ghost btn-sm" onclick="backToOnlineLobby()">← Lobby</button>
     </div>
-    <div style="display:flex;gap:16px;justify-content:center;">
-      ${[0,1].map(seatNo => {
+    <div style="display:flex;gap:16px;justify-content:center;flex-wrap:wrap;">
+      ${Array.from({length: seatCount}, (_, seatNo) => seatNo).map(seatNo => {
         const seat = tbl.seats.find(s => s.seat_no === seatNo);
         const taken = seat && seat.user_id;
         const disabled = tbl.status === 'finished';
