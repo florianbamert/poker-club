@@ -154,7 +154,8 @@
   .placeholder-view h2{font-size:20px;margin:0 0 8px;}
   .placeholder-view p{color:var(--ink-soft);font-size:14px;max-width:420px;margin:0 auto;}
 
-  .pill-group{display:flex;gap:6px;}
+  .pill-group{display:flex;gap:6px;flex-wrap:wrap;}
+  .pill.tab-pill{flex:0 0 auto;min-width:148px;text-align:center;}
   .pill{ padding:7px 14px;border-radius:999px;border:1px solid var(--btn-bg); background:var(--btn-bg);font-size:13px;font-weight:600;color:var(--btn-ink);transition:background .14s ease, border-color .14s ease, transform .12s ease; }
   .pill:not(.active):hover{background:var(--btn-hover);border-color:var(--btn-hover);transform:translateY(-1px);}
   .pill.active{background:var(--btn-active);color:var(--btn-active-ink);border-color:var(--btn-active);box-shadow:0 1px 4px rgba(0,0,0,.14);}
@@ -3029,7 +3030,7 @@ function renderOrderedPanels(viewKey, panelsMap){
   const arranging = !!panelArrangeMode[viewKey];
   return `
     <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
-      <button class="pill" onclick="toggleArrangeMode('${viewKey}')">${arranging ? '✓ Fertig' : '🔀 Anordnen'}</button>
+      <button class="btn btn-secondary btn-sm" onclick="toggleArrangeMode('${viewKey}')">${arranging ? '✓ Fertig' : '🔀 Anordnen'}</button>
     </div>
     ${order.map((key,i) => {
       if(panelsMap[key]==null) return '';
@@ -3064,9 +3065,9 @@ function renderTabbedPanels(viewKey, panelsMap){
             <button class="mini-btn" onclick="movePanel('${viewKey}','${key}',-1)" ${i===0?'disabled':''}>◀</button>
             <button class="mini-btn" onclick="movePanel('${viewKey}','${key}',1)" ${i===order.length-1?'disabled':''}>▶</button>
           </div>
-        ` : `<button class="pill ${key===active?'active':''}" onclick="setActiveTab('${viewKey}','${key}')">${PANEL_LABELS[key]||key}</button>`).join('')}
+        ` : `<button class="pill tab-pill ${key===active?'active':''}" onclick="setActiveTab('${viewKey}','${key}')">${PANEL_LABELS[key]||key}</button>`).join('')}
       </div>
-      <button class="pill" onclick="toggleArrangeMode('${viewKey}')">${arranging ? '✓ Fertig' : '🔀 Anordnen'}</button>
+      <button class="btn btn-secondary btn-sm" onclick="toggleArrangeMode('${viewKey}')">${arranging ? '✓ Fertig' : '🔀 Anordnen'}</button>
     </div>
     ${arranging ? '' : (panelsMap[active] || '')}
   `;
