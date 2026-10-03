@@ -609,6 +609,17 @@ let myRole = null;          // 'lesend' | 'erfassend' | 'app_gestaltend' im aktu
 function canWrite(){ return myRole === 'erfassend' || myRole === 'app_gestaltend'; }
 function isClubAdmin(){ return myRole === 'app_gestaltend'; }
 
+// Verknüpfung Login ↔ Spieler-Eintrag: bewusst NUR von einem Admin setzbar
+// (siehe openEditPlayerModal/submitEditPlayer, Feld "linkedEmail"), damit
+// niemand sich selbst als beliebigen anderen Spieler ausgeben kann — das
+// war die explizite Sorge beim Online-Poker-Feature ("könnte ja als
+// irgend ein Spieler eine Session spielen").
+function myPlayer(){
+  if(!currentUser || !currentUser.email || !currentClub || !currentClub.players) return null;
+  const email = currentUser.email.toLowerCase();
+  return currentClub.players.find(p => p.linkedEmail && p.linkedEmail.toLowerCase() === email) || null;
+}
+
 /* ================= Online Poker (Phase 0: Heads-up Cash Game) =================
    Diese Tabellen (online_tables/online_seats/online_hand_state/online_hand_history)
    leben NICHT im club_data-JSON-Blob wie der Rest der App, sondern sind eigene
@@ -774,11 +785,16 @@ function subscribeOnlineChannels(){
 }
 
 async function takeOnlineSeat(seatNo){
-  const buyin = prompt('Buy-in für diesen Tisch (Startstack)?', '100');
+  const player = myPlayer();
+  if(!player){
+    alert('Dein Login ist noch keinem Spieler aus eurer Liste zugeordnet. Nur ein Club-Admin kann das verknüpfen (Players-Tab → Spieler bearbeiten → "Verknüpfter Login"). Damit stellen wir sicher, dass niemand für einen anderen Spieler mitspielen kann.');
+    return;
+  }
+  const buyin = prompt(`Buy-in für ${fullName(player)} (Startstack)?`, '100');
   if(buyin == null) return;
   const amount = parseFloat(buyin);
   if(!(amount > 0)){ showToast('Ungültiger Betrag.'); return; }
-  const { error } = await sb.from('online_seats').insert({ table_id: currentOnlineTableId, seat_no: seatNo, user_id: currentUser.id, user_email: currentUser.email, stack: amount });
+  const { error } = await sb.from('online_seats').insert({ table_id: currentOnlineTableId, seat_no: seatNo, user_id: currentUser.id, user_email: currentUser.email, player_id: player.id, buyin_total: amount, stack: amount });
   if(error){ showToast('Platz konnte nicht belegt werden: ' + error.message); return; }
   await refreshOnlineTableAndSeat();
   subscribeOnlineChannels();
@@ -798,6 +814,54 @@ function backToOnlineLobby(){
   resetOnlineTableState();
   onlineLobbyLoaded = false;
   setView('online');
+}
+
+// "Tisch schliessen": überträgt die Buy-ins/Endstände der Online-Session als
+// normale Cash-Session nach currentClub.sessions, genau wie eine Live-Session
+// (siehe submitNewSession/confirmAddParticipantCash/netFor) — Bilanz & Co.
+// berechnen sich automatisch aus chipCount − sum(buyIns), keine Sonderlogik
+// nötig. Einzelne Hände werden NICHT übernommen (nur das Gesamtresultat),
+// weil das Hands-Schema eng an die Live-Tisch-UI gekoppelt ist.
+function closeOnlineTable(){
+  const tbl = onlineTables.find(x => x.id === currentOnlineTableId);
+  if(!tbl) return;
+  const seated = tbl.seats.filter(s => s.user_id);
+  if(seated.length < 2){ showToast('Tisch braucht zwei besetzte Plätze.'); return; }
+  if(seated.some(s => !s.player_id)){ showToast('Mindestens ein Platz ist keinem verknüpften Spieler zugeordnet — Ergebnis kann nicht übernommen werden.'); return; }
+  const summary = seated.map(s => `${onlineSeatPlayerName(s)}: ${formatMoney(s.stack)} (Buy-in ${formatMoney(s.buyin_total)})`).join('\n');
+  showConfirmModal(`Tisch schliessen und folgendes Ergebnis in die Statistik übernehmen?\n\n${summary}\n\nDas kann danach nicht mehr rückgängig gemacht werden.`, 'reallyCloseOnlineTable()', 'Schliessen & übernehmen');
+}
+async function reallyCloseOnlineTable(){
+  const tbl = onlineTables.find(x => x.id === currentOnlineTableId);
+  if(!tbl || !canWrite()){ showToast('Dafür fehlen dir Schreibrechte im Club.'); return; }
+  const seated = tbl.seats.filter(s => s.user_id);
+  const nowIso = new Date().toISOString();
+  const session = {
+    id: uid(), type:'cash', date: todayLocalISO(), venue:'Online', notes:'Online-Tisch (automatisch aus Chipmate Online Poker übernommen)',
+    pin: String(Math.floor(1000+Math.random()*9000)),
+    sb: tbl.small_blind, bb: tbl.big_blind, ante:0,
+    blindTemplateId:null, blindLevelIndex:0, blindStartedAt:null, blindManualOffsetMs:0,
+    buyinAmount:null, startChips:null, rebuyAmount:null, rebuyChips:null, addonAmount:null, addonChips:null,
+    payoutMode:'percent', payoutPlaces:[100], payoutTemplateId:null,
+    status:'closed', seatOrder: seated.map(s => s.player_id), handCounter:0,
+    participants: seated.map(s => ({
+      playerId: s.player_id,
+      buyIns: [{ id: uid(), time: nowIso, amount: Number(s.buyin_total||0), currency: currentClub.info.currency, method:'Online' }],
+      chipCount: Number(s.stack||0),
+      active:false, joinedAt:nowIso, leftAt:nowIso, finishRank:null
+    })),
+    actualCash:null, actualTwint:null, sevenDeuceGame:false, chipProfileId:null, betGridProfileId:null,
+    equilibriumConfirmed:true, cashConfirmed:true, ranksConfirmed:false, payoutsConfirmed:false,
+    createdAt: nowIso
+  };
+  currentClub.sessions.push(session);
+  await saveClubData();
+  const { error } = await sb.from('online_tables').update({ status:'finished' }).eq('id', currentOnlineTableId);
+  if(error) showToast('Session übernommen, aber Tisch-Status konnte nicht aktualisiert werden: ' + error.message);
+  else showToast('Session übernommen — siehe Sessions-Tab.');
+  resetOnlineTableState();
+  onlineLobbyLoaded = false;
+  setView('sessions');
 }
 
 async function callStartHand(){
@@ -821,12 +885,20 @@ async function callSubmitAction(action, amount){
   } finally { onlineBusy = false; }
 }
 
+function onlineSeatPlayerName(seat){
+  if(!seat || !seat.user_id) return null;
+  if(seat.player_id){
+    const p = currentClub.players.find(x => x.id === seat.player_id);
+    if(p) return fullName(p);
+  }
+  return seat.user_email || null; // Rückfall, falls (noch) kein verknüpfter Spieler
+}
 function onlineSeatLabel(seatNo){
   const tbl = onlineTables.find(x => x.id === currentOnlineTableId);
   const seat = tbl ? tbl.seats.find(s => s.seat_no === seatNo) : null;
   if(!seat || !seat.user_id) return 'Frei';
-  if(seat.user_id === currentUser.id) return 'Du';
-  return escapeHtml(seat.user_email || ('Spieler ' + (seatNo+1)));
+  const name = onlineSeatPlayerName(seat);
+  return escapeHtml(name || ('Spieler ' + (seatNo+1))) + (seat.user_id === currentUser.id ? ' (Du)' : '');
 }
 
 function renderOnlineTableView(){
@@ -842,17 +914,20 @@ function renderOnlineTableView(){
   const toCall = oppBet - myBet;
   const mySeatRow = tbl.seats.find(s => s.seat_no === onlineMySeat);
   const oppSeatRow = tbl.seats.find(s => s.seat_no === oppSeat);
-  const canStart = (!hs || phase === 'done' || phase === 'waiting') && mySeatRow && oppSeatRow && mySeatRow.user_id && oppSeatRow.user_id;
+  const isFinished = tbl.status === 'finished';
+  const canStart = !isFinished && (!hs || phase === 'done' || phase === 'waiting') && mySeatRow && oppSeatRow && mySeatRow.user_id && oppSeatRow.user_id;
+  const canClose = !isFinished && (!hs || phase === 'done' || phase === 'waiting') && mySeatRow && oppSeatRow && mySeatRow.user_id && oppSeatRow.user_id && mySeatRow.player_id && oppSeatRow.player_id;
   const revealOpp = hs && hs.hole_cards && (phase === 'showdown' || phase === 'done');
 
   return `
     <div class="view-head">
-      <div><h1>Online-Tisch</h1><p class="lede" style="margin-bottom:0">Blinds ${formatMoney(tbl.small_blind)} / ${formatMoney(tbl.big_blind)} · Hand #${hs ? hs.hand_no||0 : 0}</p></div>
-      <div style="display:flex;gap:8px;">
+      <div><h1>Online-Tisch</h1><p class="lede" style="margin-bottom:0">Blinds ${formatMoney(tbl.small_blind)} / ${formatMoney(tbl.big_blind)} · Hand #${hs ? hs.hand_no||0 : 0}${isFinished ? ' · Tisch abgeschlossen' : ''}</p></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" onclick="backToOnlineLobby()">← Lobby</button>
-        <button class="btn btn-ghost btn-sm" onclick="leaveOnlineSeat()">Platz verlassen</button>
+        ${!isFinished ? `<button class="btn btn-ghost btn-sm" onclick="leaveOnlineSeat()">Platz verlassen</button>` : ''}
       </div>
     </div>
+    ${isFinished ? `<div class="panel" style="text-align:center;background:var(--btn-secondary-bg);"><strong>Dieser Tisch ist geschlossen.</strong> Das Ergebnis wurde als Session in die Statistik übernommen.</div>` : ''}
     <div class="panel" style="padding:24px;display:flex;flex-direction:column;gap:16px;align-items:center;">
       <div style="text-align:center;">
         <div style="font-weight:700;opacity:.7;">${onlineSeatLabel(oppSeat)}${oppSeatRow ? ' · Stack '+formatMoney(oppSeatRow.stack) : ''}</div>
@@ -869,7 +944,11 @@ function renderOnlineTableView(){
         ${hs && hs.folded && hs.folded[String(onlineMySeat)] ? '<div style="color:#999;">Fold</div>' : ''}
       </div>
     </div>
-    ${canStart ? `<div class="panel" style="text-align:center;"><button class="btn btn-primary" onclick="callStartHand()">${hs && hs.hand_no ? 'Nächste Hand starten' : 'Hand starten'}</button></div>` : ''}
+    ${canStart || canClose ? `<div class="panel" style="text-align:center;display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
+      ${canStart ? `<button class="btn btn-primary" onclick="callStartHand()">${hs && hs.hand_no ? 'Nächste Hand starten' : 'Hand starten'}</button>` : ''}
+      ${canClose ? `<button class="btn btn-secondary" onclick="closeOnlineTable()">Tisch schliessen &amp; Ergebnis übernehmen</button>` : ''}
+    </div>` : ''}
+    ${(!hs || !hs.hand_no) && mySeatRow && oppSeatRow && mySeatRow.user_id && oppSeatRow.user_id && (!mySeatRow.player_id || !oppSeatRow.player_id) ? `<div class="panel" style="text-align:center;color:#999;font-size:13px;">Hinweis: Ohne verknüpften Spieler (siehe Players-Tab) kann dieser Tisch später nicht in die Statistik übernommen werden.</div>` : ''}
     ${hs && hs.hand_over !== undefined && hs.hand_over && hs.winner_seat !== undefined ? `<div class="panel" style="text-align:center;"><strong>${hs.winner_seat === null ? 'Split Pot' : (hs.winner_seat === onlineMySeat ? 'Du gewinnst die Hand!' : 'Gegner gewinnt die Hand.')}</strong></div>` : ''}
     ${myTurn ? renderOnlineActionBar(toCall, mySeatRow ? mySeatRow.stack : 0, hs) : (hs && ['preflop','flop','turn','river'].includes(phase) ? `<div class="panel" style="text-align:center;color:#999;">Warte auf Gegner…</div>` : '')}
   `;
@@ -885,10 +964,11 @@ function renderOnlineSeatPicker(tbl){
       ${[0,1].map(seatNo => {
         const seat = tbl.seats.find(s => s.seat_no === seatNo);
         const taken = seat && seat.user_id;
+        const disabled = tbl.status === 'finished';
         return `<div class="panel" style="min-width:160px;text-align:center;padding:20px;">
           <div style="font-weight:700;margin-bottom:8px;">Platz ${seatNo+1}</div>
-          ${taken ? `<div>${escapeHtml(seat.user_email || 'besetzt')}</div><div style="opacity:.7;">Stack ${formatMoney(seat.stack)}</div>`
-                  : `<button class="btn btn-primary btn-sm" onclick="takeOnlineSeat(${seatNo})">Hinsetzen</button>`}
+          ${taken ? `<div>${escapeHtml(onlineSeatPlayerName(seat) || 'besetzt')}</div><div style="opacity:.7;">Stack ${formatMoney(seat.stack)}</div>`
+                  : (disabled ? `<div style="opacity:.6;">Tisch geschlossen</div>` : `<button class="btn btn-primary btn-sm" onclick="takeOnlineSeat(${seatNo})">Hinsetzen</button>`)}
         </div>`;
       }).join('')}
     </div>
@@ -5143,6 +5223,12 @@ function openEditPlayerModal(id){
         <input type="hidden" id="player-photo-input" value="${p.avatarPhoto||''}">
         <div class="field"><label>${t('label_note_optional')}</label><textarea id="ep-note">${escapeHtml(p.note||'')}</textarea></div>
         ${playerGroupCheckboxesHtml(p)}
+        ${isClubAdmin() ? `
+        <div class="field">
+          <label>🔗 Verknüpfter Login (E-Mail) <span class="sublabel">${t('sublabel_optional')}</span></label>
+          <input id="ep-linked-email" type="email" value="${escapeHtml(p.linkedEmail||'')}" placeholder="z.B. florian.bamert@gmail.com">
+          <p class="hint" style="margin-top:4px;">Nur mit dieser Verknüpfung kann sich dieser Spieler selbst online an einen Tisch setzen — ohne Verknüpfung landen seine Online-Resultate nicht automatisch in der Statistik.</p>
+        </div>` : ''}
         <div id="ep-error"></div>
         <div class="modal-actions">
           <button class="btn btn-secondary" onclick="closeModal()">${t('btn_cancel')}</button>
@@ -5166,6 +5252,17 @@ async function submitEditPlayer(id){
   p.avatarCutout = !!document.getElementById('player-photo-cutout-input').value;
   p.note = document.getElementById('ep-note').value.trim();
   p.groups = readCheckedGroups();
+  if(isClubAdmin()){
+    const linkInput = document.getElementById('ep-linked-email');
+    if(linkInput){
+      const email = linkInput.value.trim().toLowerCase();
+      if(email && currentClub.players.some(x => x.id !== id && (x.linkedEmail||'').toLowerCase() === email)){
+        document.getElementById('ep-error').innerHTML = `<div class="error-msg">Diese E-Mail ist bereits einem anderen Spieler zugeordnet.</div>`;
+        return;
+      }
+      p.linkedEmail = email || null;
+    }
+  }
   await saveClubData();
   closeModal();
   render();
