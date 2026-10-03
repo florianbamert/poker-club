@@ -912,6 +912,45 @@ function onlineSeatLabel(seatNo){
   return escapeHtml(name || ('Spieler ' + (seatNo+1))) + (seat.user_id === currentUser.id ? ' (Du)' : '');
 }
 
+// Baut EINEN Sitzplatz für die grosse ovale Tisch-Grafik — bewusst eine eigene,
+// einfache Funktion statt des vollen Table-Designer-Systems (getSeatSlotsForRender/
+// Custom-Layouts): für genau 2 Sitze reichen zwei feste Positionen (oben/unten),
+// siehe Recherche zu seatPositions(2). Nutzt dieselben CSS-Klassen/Helper wie der
+// Live-Hand-Tisch (poker-seat, avatarHtml, cardChipHtml, blankCardHtml, fmtChipPlain),
+// damit es optisch identisch aussieht.
+function onlinePokerSeatHtml(pos, seatRow, seatNo, hs, revealAll, isMe){
+  if(!seatRow || !seatRow.user_id){
+    return `<div class="poker-seat" style="left:${pos.left}%;top:${pos.top}%;width:6.2%;opacity:.45;">
+      <div class="seat-name" style="color:${tableSettings.nameColor};">Frei</div>
+    </div>`;
+  }
+  const playerObj = seatRow.player_id ? currentClub.players.find(x => x.id === seatRow.player_id) : null;
+  const displayObj = playerObj || { firstName: seatRow.user_email || 'Spieler', lastName:'', avatarColor:'#8A8A8A' };
+  const phase = hs ? hs.phase : 'waiting';
+  const isActor = hs && hs.current_seat === seatNo && ['preflop','flop','turn','river'].includes(phase);
+  const folded = hs && hs.folded && hs.folded[String(seatNo)];
+  const isDealer = hs && hs.dealer_seat === seatNo;
+  let cardsHtml = '';
+  if(folded){
+    cardsHtml = '';
+  } else if(isMe && onlineMyHoleCards){
+    cardsHtml = onlineMyHoleCards.map(cardChipHtml).join('');
+  } else if(revealAll && hs && hs.hole_cards && hs.hole_cards[String(seatNo)]){
+    cardsHtml = hs.hole_cards[String(seatNo)].map(cardChipHtml).join('');
+  } else if(!isMe){
+    cardsHtml = blankCardHtml() + blankCardHtml();
+  }
+  return `
+    <div class="poker-seat${isActor?' active':''}" style="left:${pos.left}%;top:${pos.top}%;width:6.2%;${folded?'opacity:.45;':''}">
+      ${isDealer ? `<div class="pos-tag" style="position:absolute;left:50%;top:-22px;transform:translateX(-50%);background:var(--brass);color:#fff;">BTN</div>` : ''}
+      ${avatarHtml(displayObj, "margin:0 auto;")}
+      <div class="seat-name" style="color:${tableSettings.nameColor};">${escapeHtml(fullName(displayObj))}${isMe?' (Du)':''}</div>
+      ${cardsHtml ? `<div class="seat-holecards">${cardsHtml}</div>` : ''}
+      <div class="seat-stack" style="color:${tableSettings.nameColor};">${fmtChipPlain(seatRow.stack)}</div>
+      ${folded ? `<div class="action-badge" style="background:#8A8A8A;">FOLD</div>` : ''}
+    </div>`;
+}
+
 function renderOnlineTableView(){
   const tbl = onlineTables.find(x => x.id === currentOnlineTableId);
   if(!tbl) return `<div class="panel"><div class="empty-state">Tisch wird geladen…</div></div>`;
@@ -940,20 +979,17 @@ function renderOnlineTableView(){
       </div>
     </div>
     ${isFinished ? `<div class="panel" style="text-align:center;background:var(--btn-secondary-bg);"><strong>Dieser Tisch ist geschlossen.</strong> Das Ergebnis wurde als Session in die Statistik übernommen.</div>` : ''}
-    <div class="panel" style="padding:24px;display:flex;flex-direction:column;gap:16px;align-items:center;">
-      <div style="text-align:center;">
-        <div style="font-weight:700;opacity:.7;">${onlineSeatLabel(oppSeat)}${oppSeatRow ? ' · Stack '+formatMoney(oppSeatRow.stack) : ''}</div>
-        <div style="font-size:1.4em;letter-spacing:2px;margin-top:4px;">${revealOpp ? (hs.hole_cards[String(oppSeat)]||[]).join(' ') : (oppSeatRow && oppSeatRow.user_id ? '🂠 🂠' : '—')}</div>
-        ${hs && hs.folded && hs.folded[String(oppSeat)] ? '<div style="color:#999;">Fold</div>' : ''}
-      </div>
-      <div style="display:flex;gap:10px;align-items:center;">
-        <div style="font-family:'Fraunces',serif;font-weight:800;font-size:1.3em;">Pot: ${formatMoney(hs ? hs.pot : 0)}</div>
-      </div>
-      <div style="font-size:1.6em;letter-spacing:4px;min-height:1.4em;">${hs && hs.board && hs.board.length ? hs.board.join(' ') : (phase==='waiting'||!hs ? '' : '…')}</div>
-      <div style="text-align:center;">
-        <div style="font-weight:700;">${onlineSeatLabel(onlineMySeat)}${mySeatRow ? ' · Stack '+formatMoney(mySeatRow.stack) : ''}</div>
-        <div style="font-size:1.4em;letter-spacing:2px;margin-top:4px;">${onlineMyHoleCards ? onlineMyHoleCards.join(' ') : '🂠 🂠'}</div>
-        ${hs && hs.folded && hs.folded[String(onlineMySeat)] ? '<div style="color:#999;">Fold</div>' : ''}
+    <div class="panel table-pane" style="margin-bottom:16px;padding:0;">
+      <div class="poker-table-oval" style="${tableFeltStyleAttr()}">
+        ${onlinePokerSeatHtml({left:50, top:15}, oppSeatRow, oppSeat, hs, revealOpp, false)}
+        ${onlinePokerSeatHtml({left:50, top:85}, mySeatRow, onlineMySeat, hs, revealOpp, true)}
+        ${oppSeatRow && oppBet > 0 ? betLineChipHtml({left:50, top:15}, oppBet, null) : ''}
+        ${mySeatRow && myBet > 0 ? betLineChipHtml({left:50, top:85}, myBet, null) : ''}
+        <div class="pot-center">
+          ${hs && hs.board && hs.board.length ? `<div class="board-cards">${hs.board.map(cardChipHtml).join('')}</div>` : ''}
+          <div class="amt">${fmtChipPlain(hs ? hs.pot : 0)}</div>
+          <div class="lbl">Pot</div>
+        </div>
       </div>
     </div>
     ${canStart || canClose ? `<div class="panel" style="text-align:center;display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
