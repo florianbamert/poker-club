@@ -2,18 +2,24 @@
 // Nimmt eine Spieler-Absicht entgegen (fold/check/call/bet/raise), validiert
 // sie serverseitig (siehe applyAction in _shared/poker.ts) und schreibt den
 // neuen Zustand. Bei Showdown wird der Gewinner direkt hier ermittelt und
-// der Pot ausgezahlt.
+// der Pot (inkl. Side-Pots) ausgezahlt.
+//
+// Mehrweg (2–10 Sitze): state.seat_order (von deal_hand() gesetzt) ersetzt
+// die frühere feste [0,1]-Annahme. Showdown-Regel: niemand muss freiwillig
+// zeigen — resolveMultiwayShowdown() deckt automatisch nur den letzten
+// Aggressor sowie tatsächliche Pot-/Side-Pot-Gewinner auf, alle anderen
+// bleiben verdeckt (siehe dortiger Kommentar).
 //
 // Bekannte Vereinfachung für Phase 0 (siehe Architektur-Spezifikation,
 // "Offene Risiken"): Das Lesen+Schreiben läuft NICHT in einer einzigen
 // Postgres-Transaktion, sondern optimistisch — der UPDATE greift nur, wenn
 // `updated_at` seit dem Lesen nicht verändert wurde. Weil immer nur der
 // Sitz am Zug schreiben darf (current_seat-Check), ist das Risiko einer
-// echten Kollision bei nur 2 Spielern sehr gering, aber vor Phase 1 sollte
-// das durch eine atomare SQL-Funktion ersetzt werden.
+// echten Kollision gering, aber vor Phase 1 sollte das durch eine atomare
+// SQL-Funktion ersetzt werden.
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { applyAction, resolveShowdown, type ActionType, type HandState } from '../_shared/poker.ts';
+import { applyAction, resolveMultiwayShowdown, type ActionType, type HandState } from '../_shared/poker.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -35,21 +41,26 @@ Deno.serve(async (req) => {
 
     const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
-    const { data: seatsRaw } = await admin.from('online_seats').select('seat_no, user_id, stack').eq('table_id', table_id).order('seat_no');
-    if (!seatsRaw || seatsRaw.length !== 2) return json({ error: 'table_not_ready' }, 400);
-    const mySeatRow = seatsRaw.find(s => s.user_id === user.id);
-    if (!mySeatRow) return json({ error: 'not_seated' }, 403);
-    const actingSeat = mySeatRow.seat_no as 0 | 1;
-    const seats = { 0: seatsRaw[0], 1: seatsRaw[1] } as Record<number, { seat_no: 0 | 1; stack: number }>;
-
     const { data: stateRow } = await admin.from('online_hand_state').select('*').eq('table_id', table_id).single();
     if (!stateRow) return json({ error: 'no_hand' }, 400);
 
+    const seatOrder: number[] = stateRow.seat_order || [];
+    if (seatOrder.length < 2) return json({ error: 'table_not_ready' }, 400);
+
+    const { data: seatsRaw } = await admin.from('online_seats').select('seat_no, user_id, stack').eq('table_id', table_id).in('seat_no', seatOrder);
+    if (!seatsRaw || seatsRaw.length !== seatOrder.length) return json({ error: 'table_not_ready' }, 400);
+    const mySeatRow = seatsRaw.find(s => s.user_id === user.id);
+    if (!mySeatRow) return json({ error: 'not_seated' }, 403);
+    const actingSeat = mySeatRow.seat_no as number;
+    const seats: Record<string, { seat_no: number; stack: number }> = {};
+    for (const s of seatsRaw) seats[s.seat_no] = { seat_no: s.seat_no, stack: Number(s.stack) };
+
     const state: HandState = {
-      phase: stateRow.phase, dealer_seat: stateRow.dealer_seat, board: stateRow.board,
-      deck: stateRow.deck, pot: Number(stateRow.pot), current_seat: stateRow.current_seat,
-      bets: stateRow.bets, acted: stateRow.acted, folded: stateRow.folded,
-      last_raise_size: Number(stateRow.last_raise_size),
+      phase: stateRow.phase, dealer_seat: stateRow.dealer_seat, seat_order: seatOrder,
+      board: stateRow.board, deck: stateRow.deck, pot: Number(stateRow.pot), current_seat: stateRow.current_seat,
+      bets: stateRow.bets, acted: stateRow.acted, folded: stateRow.folded, all_in: stateRow.all_in || {},
+      contributions: stateRow.contributions || {}, last_raise_size: Number(stateRow.last_raise_size),
+      last_aggressor: stateRow.last_aggressor ?? null,
     };
 
     const result = applyAction(state, seats, actingSeat, action, amount);
@@ -58,14 +69,16 @@ Deno.serve(async (req) => {
     const newState = result.state!;
     const newStacks = result.stacks!;
 
-    // Optimistischer Schreibschutz: nur anwenden, wenn seit dem Lesen
-    // niemand anders geschrieben hat.
+    // Optimistischer Schreibschutz: nur anwenden, wenn seit dem Lesen niemand
+    // anders geschrieben hat.
     const { data: written, error: updateErr } = await admin
       .from('online_hand_state')
       .update({
         phase: newState.phase, board: newState.board, deck: newState.deck, pot: newState.pot,
         current_seat: newState.current_seat, bets: newState.bets, acted: newState.acted,
-        folded: newState.folded, last_raise_size: newState.last_raise_size, updated_at: new Date().toISOString(),
+        folded: newState.folded, all_in: newState.all_in, contributions: newState.contributions,
+        last_raise_size: newState.last_raise_size, last_aggressor: newState.last_aggressor,
+        updated_at: new Date().toISOString(),
       })
       .eq('table_id', table_id)
       .eq('updated_at', stateRow.updated_at)
@@ -74,55 +87,76 @@ Deno.serve(async (req) => {
     if (updateErr) return json({ error: updateErr.message }, 500);
     if (!written) return json({ error: 'state_changed_meanwhile', retry: true }, 409);
 
-    for (const seatNo of [0, 1] as const) {
+    for (const seatNo of seatOrder) {
       if (newStacks[seatNo] !== seats[seatNo].stack) {
         await admin.from('online_seats').update({ stack: newStacks[seatNo] }).eq('table_id', table_id).eq('seat_no', seatNo);
       }
     }
 
-    let winnerSeat: 0 | 1 | null = null;
     let handFinished = false;
+    let payouts: Record<string, number> = {};
+    let revealSeats: number[] = [];
 
     if (result.handOver) {
-      // Durch Fold entschieden: der verbleibende Sitz bekommt den ganzen Pot.
-      winnerSeat = result.winnerSeat!;
+      // Durch Fold entschieden: der letzte Übrige bekommt den ganzen Pot ohne Showdown.
       handFinished = true;
+      for (const pot of result.pots!) {
+        for (const s of pot.eligibleSeats) payouts[s] = (payouts[s] || 0) + pot.amount;
+      }
     } else if (newState.phase === 'showdown') {
-      const sd = resolveShowdown(stateRow.hole_cards, newState.board);
-      winnerSeat = sd.winnerSeat;
+      const sd = resolveMultiwayShowdown(
+        stateRow.hole_cards, newState.board, seatOrder, newState.folded, newState.contributions, newState.last_aggressor,
+      );
+      payouts = sd.payouts;
+      revealSeats = sd.revealSeats;
       handFinished = true;
     }
 
     if (handFinished) {
-      const potAmount = newState.pot;
-      if (winnerSeat === null) {
-        // Split Pot
-        await admin.from('online_seats').update({ stack: newStacks[0] + potAmount / 2 }).eq('table_id', table_id).eq('seat_no', 0);
-        await admin.from('online_seats').update({ stack: newStacks[1] + potAmount / 2 }).eq('table_id', table_id).eq('seat_no', 1);
-      } else {
-        await admin.from('online_seats').update({ stack: newStacks[winnerSeat] + potAmount }).eq('table_id', table_id).eq('seat_no', winnerSeat);
+      for (const seatNo of Object.keys(payouts)) {
+        const amt = payouts[Number(seatNo)];
+        if (amt > 0.0001) {
+          const base = newStacks[Number(seatNo)] ?? seats[Number(seatNo)].stack;
+          await admin.from('online_seats').update({ stack: base + amt }).eq('table_id', table_id).eq('seat_no', Number(seatNo));
+        }
       }
+      // Nur die hole_cards der tatsächlich aufgedeckten Sitze (Aggressor + echte
+      // Gewinner) landen in der Historie/im Broadcast — ein schlechteres Blatt
+      // bleibt für immer verdeckt, wie am echten Tisch.
+      const revealedHoleCards: Record<string, string[]> = {};
+      for (const s of revealSeats) revealedHoleCards[s] = stateRow.hole_cards[String(s)];
       await admin.from('online_hand_history').insert({
         table_id, hand_no: stateRow.hand_no,
-        summary: { board: newState.board, hole_cards: stateRow.hole_cards, pot: potAmount, winner_seat: winnerSeat, phase_ended: newState.phase },
+        summary: { board: newState.board, revealed_hole_cards: revealedHoleCards, payouts, phase_ended: newState.phase },
       });
-      await admin.from('online_hand_state').update({ phase: 'done' }).eq('table_id', table_id);
+      await admin.from('online_hand_state').update({ phase: 'done', pot: 0, revealed_hole_cards: revealedHoleCards }).eq('table_id', table_id);
+
+      const publicChannel = admin.channel(`table:${table_id}:public`);
+      await publicChannel.send({
+        type: 'broadcast', event: 'state',
+        payload: {
+          phase: 'done', board: newState.board, pot: 0, current_seat: newState.current_seat, bets: newState.bets,
+          folded: newState.folded, all_in: newState.all_in,
+          dealer_seat: newState.dealer_seat, hand_no: stateRow.hand_no, last_action: { seat: actingSeat, action, amount },
+          hand_over: true, payouts,
+          // Beim Showdown werden nur die aufgedeckten Hände öffentlich — kein Leck,
+          // sondern dieselbe Etikette wie am echten Tisch (siehe resolveMultiwayShowdown).
+          revealed_hole_cards: revealedHoleCards,
+        },
+      });
+    } else {
+      const publicChannel = admin.channel(`table:${table_id}:public`);
+      await publicChannel.send({
+        type: 'broadcast', event: 'state',
+        payload: {
+          phase: newState.phase, board: newState.board, pot: newState.pot, current_seat: newState.current_seat,
+          bets: newState.bets, folded: newState.folded, all_in: newState.all_in, last_raise_size: newState.last_raise_size,
+          dealer_seat: newState.dealer_seat, hand_no: stateRow.hand_no, last_action: { seat: actingSeat, action, amount }, hand_over: false,
+        },
+      });
     }
 
-    const publicChannel = admin.channel(`table:${table_id}:public`);
-    await publicChannel.send({
-      type: 'broadcast', event: 'state',
-      payload: {
-        phase: handFinished ? 'done' : newState.phase, board: newState.board, pot: handFinished ? 0 : newState.pot,
-        current_seat: newState.current_seat, bets: newState.bets, last_action: { seat: actingSeat, action, amount },
-        hand_over: handFinished, winner_seat: winnerSeat,
-        // Beim Showdown werden die Karten regelkonform öffentlich — das ist
-        // kein Leck, sondern Poker-Standard (alle zeigen am River ihre Hand).
-        revealed_hole_cards: newState.phase === 'showdown' || handFinished ? stateRow.hole_cards : undefined,
-      },
-    });
-
-    return json({ ok: true, phase: handFinished ? 'done' : newState.phase, hand_over: handFinished, winner_seat: winnerSeat });
+    return json({ ok: true, phase: handFinished ? 'done' : newState.phase, hand_over: handFinished, payouts });
   } catch (e) {
     return json({ error: String(e) }, 500);
   }

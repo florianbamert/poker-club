@@ -4,6 +4,10 @@
 //  - Board/Pot/Zug an den öffentlichen Broadcast-Kanal (alle Sitze)
 //  - jede Hole-Card-Zuteilung NUR an den privaten Kanal des jeweiligen Sitzes
 // Siehe Architektur-Spezifikation, Abschnitt "Realtime-Sync-Modell".
+//
+// Seit dem Mehrweg-Dealer (chipmate_online_poker_phase0_multiway.sql) gibt
+// es keine feste [0,1]-Sitzliste mehr — die tatsächlich an dieser Hand
+// beteiligten Sitze stehen in state.seat_order (von deal_hand() gesetzt).
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 
@@ -40,12 +44,17 @@ Deno.serve(async (req) => {
     const publicChannel = admin.channel(`table:${table_id}:public`);
     await publicChannel.send({
       type: 'broadcast', event: 'state',
-      payload: { phase: state.phase, board: state.board, pot: state.pot, current_seat: state.current_seat, dealer_seat: state.dealer_seat, bets: state.bets, hand_no: state.hand_no },
+      payload: {
+        phase: state.phase, board: state.board, pot: state.pot, current_seat: state.current_seat,
+        dealer_seat: state.dealer_seat, bets: state.bets, hand_no: state.hand_no, seat_order: state.seat_order,
+        folded: state.folded, all_in: state.all_in, last_raise_size: state.last_raise_size,
+      },
     });
 
-    // Eigene Hole Cards nur auf dem jeweils privaten Kanal — nie zusammen
-    // in einer Nachricht, die beide Sitze empfangen könnten.
-    for (const seatNo of [0, 1]) {
+    // Eigene Hole Cards nur auf dem jeweils privaten Kanal — nie zusammen in
+    // einer Nachricht, die mehrere Sitze empfangen könnten.
+    const seatOrder: number[] = state.seat_order || [];
+    for (const seatNo of seatOrder) {
       const seatChannel = admin.channel(`table:${table_id}:seat:${seatNo}`, { config: { private: true } });
       await seatChannel.send({ type: 'broadcast', event: 'hole_cards', payload: { cards: state.hole_cards[String(seatNo)] } });
     }

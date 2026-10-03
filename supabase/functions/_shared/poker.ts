@@ -51,12 +51,12 @@ export function evaluate5(cards: string[]): number[] {
 }
 
 export function evaluate7(cards: string[]): number[] {
-  let best: number[] | null = null;
+  let best: number[] = [-1];
   combinations(cards, 5).forEach(c => {
     const val = evaluate5(c);
-    if (!best || compareHandArrays(val, best) > 0) best = val;
+    if (compareHandArrays(val, best) > 0) best = val;
   });
-  return best as number[];
+  return best;
 }
 
 export function compareHandArrays(a: number[], b: number[]): number {
@@ -67,57 +67,59 @@ export function compareHandArrays(a: number[], b: number[]): number {
   return 0;
 }
 
+function round2(n: number): number { return Math.round((n + Number.EPSILON) * 100) / 100; }
+
 // =====================================================================
-// Phase-0-spezifisch: Heads-up-Betting-State-Machine (NEU, nicht aus der
-// App übernommen — hier lohnt sich zusätzliche Testabdeckung, siehe
-// poker.test.mjs).
+// Mehrweg-Betting-State-Machine (2–10 Sitze). Ersetzt die ursprüngliche
+// Heads-up-only Variante. Kernidee gegenüber Heads-up: statt eines fest
+// verdrahteten "Gegner"-Sitzes gibt es `seat_order` — die bei deal_hand()
+// EINMAL festgelegte, aufsteigend sortierte Liste der an dieser Hand
+// beteiligten Sitze. Alle Positions-/Reihenfolge-Berechnungen (wer ist
+// nach wem dran, wer ist SB/BB, wer zeigt beim Showdown zuerst) laufen
+// als Rotation über dieses Array.
 // =====================================================================
 
 export type Phase = 'waiting' | 'preflop' | 'flop' | 'turn' | 'river' | 'showdown' | 'done';
 
 export interface HandState {
   phase: Phase;
-  dealer_seat: 0 | 1;
+  dealer_seat: number;
+  seat_order: number[];       // fix für die ganze Hand: besetzte Sitze, aufsteigend nach seat_no
   board: string[];
   deck: string[];
-  pot: number;
-  current_seat: 0 | 1;
-  bets: Record<string, number>;
-  acted: Record<string, number | boolean>;
+  pot: number;                // Summe aller Beiträge dieser Hand (für die Anzeige)
+  current_seat: number;
+  bets: Record<string, number>;          // Einsätze DIESER Setzrunde
+  acted: Record<string, boolean>;        // wer in dieser Setzrunde schon agiert hat
   folded: Record<string, boolean>;
+  all_in: Record<string, boolean>;
+  contributions: Record<string, number>; // Gesamtbeitrag zum Pot über die GANZE Hand (für Side-Pots)
   last_raise_size: number;
+  last_aggressor: number | null;         // wer zuletzt freiwillig gesetzt/erhöht hat (nie durch Blinds gesetzt)
 }
 
-export interface SeatInfo {
-  seat_no: 0 | 1;
-  stack: number;
-}
-
+export interface SeatInfo { seat_no: number; stack: number; }
 export type ActionType = 'fold' | 'check' | 'call' | 'bet' | 'raise';
+
+export interface PotLayer { amount: number; eligibleSeats: number[]; }
 
 export interface ApplyActionResult {
   error?: string;
   state?: HandState;
   stacks?: Record<string, number>;
   handOver?: boolean;
-  winnerSeat?: 0 | 1 | null; // null = Split Pot
+  pots?: PotLayer[]; // nur bei handOver=true durch Fold gesetzt (ein Pot an den letzten Übrigen)
 }
 
-const other = (seat: 0 | 1): 0 | 1 => (seat === 0 ? 1 : 0);
-
-/** Deckt die nächsten n Karten vom Deck auf (kein Burn-Card — bewusste
- * Vereinfachung für den Prototyp, siehe Verifikationsplan). */
 function dealCards(deck: string[], n: number): { cards: string[]; rest: string[] } {
   return { cards: deck.slice(0, n), rest: deck.slice(n) };
 }
-
 function nextStreetCardCount(phase: Phase): number {
   if (phase === 'preflop') return 3; // Flop
   if (phase === 'flop') return 1;    // Turn
   if (phase === 'turn') return 1;    // River
   return 0;
 }
-
 function nextStreetName(phase: Phase): Phase {
   if (phase === 'preflop') return 'flop';
   if (phase === 'flop') return 'turn';
@@ -125,15 +127,57 @@ function nextStreetName(phase: Phase): Phase {
   return 'showdown';
 }
 
+/** Nächster Sitz nach `from` in der Rotation, der weder gefoldet noch all-in
+ * ist (also noch agieren kann). Fällt auf `from` zurück, falls niemand mehr
+ * agieren kann (sollte von den Aufrufern vorher abgefangen werden). */
+function nextActingSeat(order: number[], from: number, folded: Record<string, boolean>, allIn: Record<string, boolean>): number {
+  const n = order.length;
+  const idx = order.indexOf(from);
+  for (let k = 1; k <= n; k++) {
+    const cand = order[(idx + k) % n];
+    if (!folded[cand] && !allIn[cand]) return cand;
+  }
+  return from;
+}
+
+/** Erster Sitz nach dem Dealer, der eine neue Strasse eröffnet — identisch
+ * zu nextActingSeat, nur semantisch für den Strassenwechsel benannt. */
+function firstActiveAfterDealer(order: number[], dealerSeat: number, folded: Record<string, boolean>, allIn: Record<string, boolean>): number {
+  return nextActingSeat(order, dealerSeat, folded, allIn);
+}
+
+/** Baut Haupt-Pot + Side-Pots aus den kumulierten Beiträgen der ganzen Hand.
+ * Klassischer Layer-Algorithmus: pro eindeutigem Beitrags-Niveau (meist durch
+ * unterschiedlich hohe All-ins verursacht) eine Schicht, an der alle beteiligt
+ * sind, die mindestens so viel eingezahlt haben — gewinnberechtigt für diese
+ * Schicht sind aber nur die davon, die nicht gefoldet haben. */
+export function buildPots(contributions: Record<string, number>, foldedSeats: Set<number>, seatOrder: number[]): PotLayer[] {
+  const entries = seatOrder.map(s => ({ seat: s, amt: contributions[s] || 0 })).filter(e => e.amt > 0.0001);
+  const levels = [...new Set(entries.map(e => e.amt))].sort((a, b) => a - b);
+  const pots: PotLayer[] = [];
+  let prev = 0;
+  for (const level of levels) {
+    const layerPer = level - prev;
+    const contributors = entries.filter(e => e.amt >= level - 0.0001);
+    const layerTotal = round2(layerPer * contributors.length);
+    if (layerTotal > 0.0001) {
+      const eligible = contributors.filter(e => !foldedSeats.has(e.seat)).map(e => e.seat);
+      pots.push({ amount: layerTotal, eligibleSeats: eligible });
+    }
+    prev = level;
+  }
+  return pots;
+}
+
 /**
- * Reine Funktion: nimmt den aktuellen Zustand + eine Aktion, gibt den
- * neuen Zustand zurück. Macht KEINE DB-Zugriffe — darum problemlos mit
- * Node testbar, ohne Deno oder eine echte Datenbank zu brauchen.
+ * Reine Funktion: nimmt den aktuellen Zustand + eine Aktion, gibt den neuen
+ * Zustand zurück. Macht KEINE DB-Zugriffe — darum problemlos mit Node testbar,
+ * ohne Deno oder eine echte Datenbank zu brauchen.
  */
 export function applyAction(
   state: HandState,
   seats: Record<string, SeatInfo>,
-  actingSeat: 0 | 1,
+  actingSeat: number,
   action: ActionType,
   amount?: number,
 ): ApplyActionResult {
@@ -143,74 +187,109 @@ export function applyAction(
   if (state.current_seat !== actingSeat) {
     return { error: 'not_your_turn' };
   }
+  if (state.folded[actingSeat] || state.all_in[actingSeat]) {
+    return { error: 'cannot_act' };
+  }
 
-  const opp = other(actingSeat);
   const bets = { ...state.bets };
   const acted = { ...state.acted };
   const folded = { ...state.folded };
-  const stacks = { [actingSeat]: seats[actingSeat].stack, [opp]: seats[opp].stack };
+  const allIn = { ...state.all_in };
+  const contributions = { ...state.contributions };
+  const stacks: Record<string, number> = {};
+  for (const s of state.seat_order) stacks[s] = seats[s].stack;
   let pot = state.pot;
   let lastRaiseSize = state.last_raise_size;
+  let lastAggressor = state.last_aggressor;
 
-  const toCall = (bets[opp] || 0) - (bets[actingSeat] || 0);
+  const currentMaxBet = Math.max(0, ...state.seat_order.filter(s => !folded[s]).map(s => bets[s] || 0));
+  const toCall = currentMaxBet - (bets[actingSeat] || 0);
 
   if (action === 'fold') {
     folded[actingSeat] = true;
+    acted[actingSeat] = true;
   } else if (action === 'check') {
-    if (toCall !== 0) return { error: 'cannot_check_facing_bet' };
+    if (toCall > 0.0001) return { error: 'cannot_check_facing_bet' };
     acted[actingSeat] = true;
   } else if (action === 'call') {
-    if (toCall <= 0) return { error: 'nothing_to_call' };
+    if (toCall <= 0.0001) return { error: 'nothing_to_call' };
     const callAmt = Math.min(toCall, stacks[actingSeat]);
-    bets[actingSeat] = (bets[actingSeat] || 0) + callAmt;
-    stacks[actingSeat] -= callAmt;
-    pot += callAmt;
+    bets[actingSeat] = round2((bets[actingSeat] || 0) + callAmt);
+    contributions[actingSeat] = round2((contributions[actingSeat] || 0) + callAmt);
+    stacks[actingSeat] = round2(stacks[actingSeat] - callAmt);
+    pot = round2(pot + callAmt);
     acted[actingSeat] = true;
+    if (stacks[actingSeat] <= 0.0001) allIn[actingSeat] = true;
   } else if (action === 'bet' || action === 'raise') {
     if (typeof amount !== 'number' || !Number.isFinite(amount)) return { error: 'invalid_amount' };
     const currentBet = bets[actingSeat] || 0;
-    if (amount <= currentBet) return { error: 'invalid_amount' };
-    const added = amount - currentBet;
-    if (added > stacks[actingSeat]) return { error: 'insufficient_stack' };
-    const isAllIn = added === stacks[actingSeat];
-    const minTotal = (bets[opp] || 0) + lastRaiseSize;
-    if (amount < minTotal && !isAllIn) return { error: 'raise_too_small' };
-    const raiseSize = amount - (bets[opp] || 0);
-    bets[actingSeat] = amount;
-    stacks[actingSeat] -= added;
-    pot += added;
+    if (amount <= currentBet + 0.0001) return { error: 'invalid_amount' };
+    const added = round2(amount - currentBet);
+    if (added > stacks[actingSeat] + 0.0001) return { error: 'insufficient_stack' };
+    const isAllIn = added >= stacks[actingSeat] - 0.0001;
+    const minTotal = currentMaxBet + lastRaiseSize;
+    if (amount < minTotal - 0.0001 && !isAllIn) return { error: 'raise_too_small' };
+    const raiseSize = amount - currentMaxBet;
+    bets[actingSeat] = round2(amount);
+    contributions[actingSeat] = round2((contributions[actingSeat] || 0) + added);
+    stacks[actingSeat] = round2(stacks[actingSeat] - added);
+    pot = round2(pot + added);
     acted[actingSeat] = true;
-    acted[opp] = false; // Gegner muss auf die neue Erhöhung reagieren
-    if (raiseSize > lastRaiseSize) lastRaiseSize = raiseSize;
+    if (isAllIn) allIn[actingSeat] = true;
+    if (raiseSize > 0.0001) {
+      // Echte freiwillige Erhöhung (nicht nur ein verkürzter All-in-"Call" unter
+      // dem bisherigen Gebot) — macht diesen Sitz zum neuen Showdown-Aggressor
+      // und zwingt alle anderen noch aktiven Sitze zu einer erneuten Reaktion.
+      lastAggressor = actingSeat;
+      if (raiseSize > lastRaiseSize) lastRaiseSize = raiseSize;
+      for (const s of state.seat_order) {
+        if (s !== actingSeat && !folded[s] && !allIn[s]) acted[s] = false;
+      }
+    }
   } else {
     return { error: 'unknown_action' };
   }
 
-  // Hand endet sofort durch Fold
-  if (folded[actingSeat]) {
+  const liveSeats = state.seat_order.filter(s => !folded[s]);
+
+  // Hand endet sofort, wenn nur noch ein Sitz übrig ist (alle anderen gefoldet)
+  // — der volle Pot (inkl. der Beiträge der gefoldeten Sitze) geht ohne
+  // Showdown an diesen Sitz.
+  if (liveSeats.length === 1) {
+    const winnerSeat = liveSeats[0];
     return {
-      state: { ...state, bets, acted, folded, pot, last_raise_size: lastRaiseSize, phase: 'done', current_seat: opp },
+      state: { ...state, bets, acted, folded, all_in: allIn, contributions, pot, last_raise_size: lastRaiseSize, last_aggressor: lastAggressor, phase: 'done', current_seat: winnerSeat },
       stacks,
       handOver: true,
-      winnerSeat: opp,
+      pots: [{ amount: pot, eligibleSeats: [winnerSeat] }],
     };
   }
 
-  const bothActed = !!acted[0] && !!acted[1];
-  const betsEqual = (bets[0] || 0) === (bets[1] || 0);
-  const roundComplete = bothActed && betsEqual;
-  const someoneAllIn = stacks[0] === 0 || stacks[1] === 0;
+  const seatsCanAct = liveSeats.filter(s => !allIn[s]);
+  const newMaxBet = Math.max(0, ...liveSeats.map(s => bets[s] || 0));
+  const allActed = seatsCanAct.every(s => acted[s]);
+  const betsSettled = seatsCanAct.every(s => Math.abs((bets[s] || 0) - newMaxBet) < 0.0001);
+  // Ist niemand mehr übrig, der agieren kann (alle live Sitze all-in bis auf
+  // höchstens einen, der schon passend gesetzt hat), ist die Runde ebenfalls
+  // fertig — .every() auf einem leeren Array ist per Definition true, das
+  // deckt den Fall "alle bis auf den Aktuellen sind all-in" korrekt ab.
+  const roundComplete = allActed && betsSettled;
 
   if (!roundComplete) {
+    const next = nextActingSeat(state.seat_order, actingSeat, folded, allIn);
     return {
-      state: { ...state, bets, acted, folded, pot, last_raise_size: lastRaiseSize, current_seat: opp },
+      state: { ...state, bets, acted, folded, all_in: allIn, contributions, pot, last_raise_size: lastRaiseSize, last_aggressor: lastAggressor, current_seat: next },
       stacks,
       handOver: false,
     };
   }
 
-  // Setzrunde fertig
-  if (state.phase === 'river' || someoneAllIn) {
+  // Setzrunde fertig. "seatsCanAct.length <= 1" deckt nicht nur den Fall ab, dass
+  // ALLE live Sitze all-in sind, sondern auch: genau EIN Sitz hat noch Chips, hat
+  // aber bereits passend gecallt/gecheckt — dann kann niemand mehr auf eine weitere
+  // Aktion reagieren (alle anderen sind all-in), also sofort zum Showdown durchlaufen
+  // statt noch eine sinnlose Setzrunde für einen einzelnen Spieler zu eröffnen.
+  if (state.phase === 'river' || seatsCanAct.length <= 1) {
     // Restliche Board-Karten (falls All-in vor dem River) aufdecken, dann Showdown.
     let board = state.board.slice();
     let deck = state.deck.slice();
@@ -223,24 +302,27 @@ export function applyAction(
       phase = nextStreetName(phase);
     }
     return {
-      state: { ...state, bets, acted, folded, pot, last_raise_size: lastRaiseSize, board, deck, phase: 'showdown', current_seat: actingSeat },
+      state: { ...state, bets, acted, folded, all_in: allIn, contributions, pot, last_raise_size: lastRaiseSize, last_aggressor: lastAggressor, board, deck, phase: 'showdown', current_seat: actingSeat },
       stacks,
-      handOver: false, // resolveShowdown() entscheidet den Gewinner separat
+      handOver: false, // resolveMultiwayShowdown() wertet separat aus
     };
   }
 
-  // Nächste Strasse: Karten aufdecken, Einsätze zurücksetzen, Nicht-Dealer beginnt.
+  // Nächste Strasse: Karten aufdecken, Einsätze zurücksetzen, erster aktiver
+  // Sitz nach dem Dealer beginnt.
   const { cards, rest } = dealCards(state.deck, nextStreetCardCount(state.phase));
   const newPhase = nextStreetName(state.phase);
-  const firstToAct = other(state.dealer_seat); // Heads-up: Nicht-Dealer (Big Blind) agiert postflop zuerst
+  const firstToAct = firstActiveAfterDealer(state.seat_order, state.dealer_seat, folded, allIn);
+  const newBets: Record<string, number> = {};
+  for (const s of state.seat_order) newBets[s] = 0;
   return {
     state: {
       ...state,
-      bets: { 0: 0, 1: 0 },
+      bets: newBets,
       acted: {},
-      folded,
-      pot,
-      last_raise_size: state.pot > 0 ? state.last_raise_size : lastRaiseSize, // Big-Blind-Grösse bleibt Minimum
+      folded, all_in: allIn, contributions, pot,
+      last_raise_size: lastRaiseSize,
+      last_aggressor: lastAggressor,
       board: state.board.concat(cards),
       deck: rest,
       phase: newPhase,
@@ -251,11 +333,54 @@ export function applyAction(
   };
 }
 
-/** Showdown: vergleicht beide Hände, gibt den Sitz des Gewinners zurück
- * (oder null bei Split Pot). */
-export function resolveShowdown(holeCards: Record<string, string[]>, board: string[]): { winnerSeat: 0 | 1 | null; values: Record<string, number[]> } {
-  const val0 = evaluate7(holeCards[0].concat(board));
-  const val1 = evaluate7(holeCards[1].concat(board));
-  const cmp = compareHandArrays(val0, val1);
-  return { winnerSeat: cmp === 0 ? null : cmp > 0 ? 0 : 1, values: { 0: val0, 1: val1 } };
+/**
+ * Automatische Mehrweg-Showdown-Auswertung (2–10 Spieler), inkl. Side-Pots.
+ *
+ * Regel (so vom Club-Admin festgelegt, entspricht der üblichen Cardroom-
+ * Etikette): NIEMAND muss sein Blatt freiwillig zeigen — der Server kennt
+ * die Karten ohnehin und wertet vollautomatisch aus, ohne eine Show/Muck-
+ * Eingabe der Spieler abzuwarten. Aufgedeckt (für alle sichtbar) werden nur:
+ *   (a) wer zuletzt freiwillig gesetzt/erhöht hat (last_aggressor) — die
+ *       klassische Regel "wer zuletzt aggressiv war, zeigt zuerst", hier
+ *       automatisch statt als Spieler-Entscheidung umgesetzt, und
+ *   (b) wer tatsächlich (mindestens) einen Pot oder Side-Pot gewinnt.
+ * Ein schlechteres Blatt bleibt verdeckt — "wer sowieso schlechter ist,
+ * muss nicht zeigen".
+ */
+export function resolveMultiwayShowdown(
+  holeCards: Record<string, string[]>,
+  board: string[],
+  seatOrder: number[],
+  folded: Record<string, boolean>,
+  contributions: Record<string, number>,
+  lastAggressor: number | null,
+): { payouts: Record<string, number>; revealSeats: number[]; values: Record<string, number[]> } {
+  const foldedSet = new Set(seatOrder.filter(s => folded[s]));
+  const pots = buildPots(contributions, foldedSet, seatOrder);
+  const liveSeats = seatOrder.filter(s => !folded[s]);
+  const values: Record<string, number[]> = {};
+  for (const s of liveSeats) values[s] = evaluate7(holeCards[s].concat(board));
+
+  const payouts: Record<string, number> = {};
+  const revealSet = new Set<number>();
+  if (lastAggressor != null && !folded[lastAggressor]) revealSet.add(lastAggressor);
+
+  for (const pot of pots) {
+    if (pot.eligibleSeats.length === 0) continue; // alle Beitragenden dieser Schicht haben gefoldet
+    let bestVal: number[] | null = null;
+    for (const s of pot.eligibleSeats) {
+      if (!bestVal || compareHandArrays(values[s], bestVal) > 0) bestVal = values[s];
+    }
+    const winners = pot.eligibleSeats.filter(s => compareHandArrays(values[s], bestVal!) === 0);
+    winners.forEach(s => revealSet.add(s));
+    const share = Math.floor((pot.amount / winners.length) * 100) / 100;
+    let distributed = 0;
+    winners.forEach((s, i) => {
+      const amt = i === winners.length - 1 ? round2(pot.amount - distributed) : share; // Rest-Rappen an den letzten
+      payouts[s] = round2((payouts[s] || 0) + amt);
+      distributed = round2(distributed + amt);
+    });
+  }
+
+  return { payouts, revealSeats: [...revealSet], values };
 }

@@ -790,8 +790,12 @@ function subscribeOnlineChannels(){
       // get_public_hand_state() (initialer Ladevorgang) nennt dasselbe Feld
       // "hole_cards" — hier auf einen gemeinsamen Namen normalisieren, damit
       // renderOnlineTableView() nicht zwischen den beiden Quellen unterscheiden muss.
-      onlineHandState = { ...msg.payload, hole_cards: msg.payload.revealed_hole_cards || null };
-      if(msg.payload.revealed_hole_cards) onlineMyHoleCards = onlineMySeat != null ? msg.payload.revealed_hole_cards[String(onlineMySeat)] : onlineMyHoleCards;
+      // Seit der automatischen Mehrweg-Showdown-Regel (nur Aggressor + echte Pot-
+      // Gewinner werden aufgedeckt) enthält revealed_hole_cards NICHT mehr zwingend
+      // den eigenen Sitz — die eigenen Karten kommen ausschliesslich über den
+      // privaten Kanal unten, hier NICHT mehr überschreiben (sonst würden die
+      // eigenen Karten fälschlich ausgeblendet, sobald man selbst mucken "würde").
+      onlineHandState = { ...msg.payload, hole_cards: msg.payload.revealed_hole_cards || {} };
       render();
     })
     .subscribe();
@@ -942,7 +946,7 @@ function onlineSeatLabel(seatNo){
 // useAbsoluteBox/useAbsoluteName/useAbsoluteStack. Ohne gewähltes Layout liefert
 // getSeatSlotsForRender die generische Kreis-Position (seatPositions), die
 // Darstellung bleibt dann wie zuvor.
-function onlinePokerSeatHtml(slot, seatRow, seatNo, hs, revealAll, isMe){
+function onlinePokerSeatHtml(slot, seatRow, seatNo, hs, isMe){
   const useAbsoluteBox = slot.boxX != null && slot.boxY != null;
   const useAbsoluteName = slot.nameX != null && slot.nameY != null;
   const useAbsoluteStack = slot.stackX != null && slot.stackY != null;
@@ -963,20 +967,28 @@ function onlinePokerSeatHtml(slot, seatRow, seatNo, hs, revealAll, isMe){
   const phase = hs ? hs.phase : 'waiting';
   const isActor = hs && hs.current_seat === seatNo && ['preflop','flop','turn','river'].includes(phase);
   const folded = hs && hs.folded && hs.folded[String(seatNo)];
+  const isAllIn = hs && hs.all_in && hs.all_in[String(seatNo)] && !folded;
   const isDealer = hs && hs.dealer_seat === seatNo;
+  // Welche Hole Cards gezeigt werden, hängt NICHT mehr von einem pauschalen "revealAll"
+  // ab: hs.hole_cards enthält serverseitig ab dem Showdown nur noch die Karten der
+  // Sitze, die tatsächlich aufgedeckt wurden (letzter Aggressor + echte Pot-Gewinner,
+  // siehe resolveMultiwayShowdown in _shared/poker.ts) — ein schlechteres, verdecktes
+  // Blatt taucht in hs.hole_cards also schlicht nie auf und bleibt hier automatisch
+  // als Kartenrücken dargestellt.
   let cardsHtml = '';
   if(folded){
     cardsHtml = '';
   } else if(isMe && onlineMyHoleCards){
     cardsHtml = onlineMyHoleCards.map(cardChipHtml).join('');
-  } else if(revealAll && hs && hs.hole_cards && hs.hole_cards[String(seatNo)]){
+  } else if(hs && hs.hole_cards && hs.hole_cards[String(seatNo)]){
     cardsHtml = hs.hole_cards[String(seatNo)].map(cardChipHtml).join('');
   } else if(!isMe){
     cardsHtml = blankCardHtml() + blankCardHtml();
   }
 
   const nameInnerHtml = `<div class="seat-name${isActor?' seat-turn-blink':''}" style="color:${textColor};transform:scale(${slot.nameScale});transform-origin:center;">${escapeHtml(fullName(displayObj))}${isMe?' (Du)':''}</div>`;
-  const stackRowHtml = `<div class="stack-row"><div class="seat-stack">${fmtChipPlain(seatRow.stack)}</div></div>${folded ? `<div class="action-badge" style="background:#8A8A8A;">FOLD</div>` : ''}`;
+  const statusBadge = folded ? `<div class="action-badge" style="background:#8A8A8A;">FOLD</div>` : (isAllIn ? `<div class="action-badge" style="background:var(--brass);">ALL-IN</div>` : '');
+  const stackRowHtml = `<div class="stack-row"><div class="seat-stack">${fmtChipPlain(seatRow.stack)}</div></div>${statusBadge}`;
   const stackInnerHtml = `<div class="${isActor?'seat-turn-blink':''}" style="color:${textColor};transform:scale(${slot.stackScale});transform-origin:center;">${stackRowHtml}</div>`;
   const standaloneNameHtml = useAbsoluteName ? `<div style="position:absolute;left:${slot.nameX}%;top:${slot.nameY}%;transform:translate(-50%,-50%);z-index:5;max-width:16cqw;">${nameInnerHtml}</div>` : '';
   const standaloneStackHtml = useAbsoluteStack ? `<div style="position:absolute;left:${slot.stackX}%;top:${slot.stackY}%;transform:translate(-50%,-50%);z-index:5;">${stackInnerHtml}</div>` : '';
@@ -1005,24 +1017,20 @@ function renderOnlineTableView(){
   const hs = onlineHandState;
   const phase = hs ? hs.phase : 'waiting';
   const seatCount = tbl.seat_count || 2;
-  // Der automatische Karten-Dealer (start_hand/submit_action Edge Functions, deal_hand SQL-Funktion)
-  // ist bisher hartcodiert auf genau 2 Sitze (seat_no 0/1) — ein echter Multiway-Dealer mit Side-Pots
-  // und Mehrweg-Showdown ist ein eigenes, grösseres Stück Arbeit. Tische mit mehr Sitzen funktionieren
-  // schon jetzt als Sitzplatz-/Buy-in-/Stack-Tracker (reallyCloseOnlineTable kennt beliebig viele
-  // Sitze), aber "Hand starten" bleibt an dieser Stelle bewusst auf Heads-up beschränkt.
-  const isHeadsUpEngine = seatCount === 2;
-  const oppSeat = onlineMySeat === 0 ? 1 : 0;
-  const myBet = hs && hs.bets ? (hs.bets[String(onlineMySeat)] || 0) : 0;
-  const oppBet = hs && hs.bets ? (hs.bets[String(oppSeat)] || 0) : 0;
-  const toCall = oppBet - myBet;
-  const myTurn = isHeadsUpEngine && hs && hs.current_seat === onlineMySeat && ['preflop','flop','turn','river'].includes(phase);
-  const mySeatRow = tbl.seats.find(s => s.seat_no === onlineMySeat);
-  const oppSeatRow = isHeadsUpEngine ? tbl.seats.find(s => s.seat_no === oppSeat) : null;
   const seatedRows = tbl.seats.filter(s => s.user_id);
+  const mySeatRow = tbl.seats.find(s => s.seat_no === onlineMySeat);
   const isFinished = tbl.status === 'finished';
-  const canStart = isHeadsUpEngine && !isFinished && (!hs || phase === 'done' || phase === 'waiting') && mySeatRow && oppSeatRow && mySeatRow.user_id && oppSeatRow.user_id;
+  // "Hand starten" braucht mindestens zwei besetzte Sitze MIT Stack > 0 (siehe deal_hand
+  // SQL-Funktion) — funktioniert jetzt für 2 bis seat_count Sitze, nicht mehr nur Heads-up.
+  const stackedSeats = seatedRows.filter(s => Number(s.stack || 0) > 0);
+  const canStart = !isFinished && (!hs || phase === 'done' || phase === 'waiting') && stackedSeats.length >= 2;
   const canClose = !isFinished && (!hs || phase === 'done' || phase === 'waiting') && seatedRows.length >= 2 && seatedRows.every(s => s.player_id);
-  const revealOpp = hs && hs.hole_cards && (phase === 'showdown' || phase === 'done');
+
+  const myBet = hs && hs.bets ? (hs.bets[String(onlineMySeat)] || 0) : 0;
+  const currentMaxBet = hs && hs.bets ? Math.max(0, ...Object.values(hs.bets).map(Number)) : 0;
+  const toCall = currentMaxBet - myBet;
+  const myTurn = hs && hs.current_seat === onlineMySeat && ['preflop','flop','turn','river'].includes(phase);
+  const actorSeatRow = hs && ['preflop','flop','turn','river'].includes(phase) ? tbl.seats.find(s => s.seat_no === hs.current_seat) : null;
 
   // Eigenes Table-Designer-Layout statt generischer Oval-Positionen — identisch zum
   // Handerfassungsmodus (dort: getActiveLayout(sessionId)/getSeatSlotsForRender).
@@ -1043,15 +1051,14 @@ function renderOnlineTableView(){
   const seatsHtml = Array.from({length: seatCount}, (_, seatNo) => {
     const seatRow = tbl.seats.find(s => s.seat_no === seatNo);
     const isMe = seatNo === onlineMySeat;
-    const bet = isHeadsUpEngine && hs && hs.bets ? (hs.bets[String(seatNo)] || 0) : 0;
-    const revealThis = isHeadsUpEngine ? revealOpp : false;
-    return onlinePokerSeatHtml(slots[seatNo], seatRow, seatNo, isHeadsUpEngine ? hs : null, revealThis, isMe)
-      + (seatRow && bet > 0 ? betLineChipHtml(slots[seatNo], bet, null) : '');
+    const bet = hs && hs.bets ? (hs.bets[String(seatNo)] || 0) : 0;
+    return onlinePokerSeatHtml(slots[seatNo], seatRow, seatNo, hs, isMe)
+      + (seatRow && bet > 0.0001 ? betLineChipHtml(slots[seatNo], bet, null) : '');
   }).join('');
 
   return `
     <div class="view-head">
-      <div><h1>Online-Tisch</h1><p class="lede" style="margin-bottom:0">Blinds ${formatMoney(tbl.small_blind)} / ${formatMoney(tbl.big_blind)} · ${seatCount} Sitze${isHeadsUpEngine ? ` · Hand #${hs ? hs.hand_no||0 : 0}` : ''}${isFinished ? ' · Tisch abgeschlossen' : ''}</p></div>
+      <div><h1>Online-Tisch</h1><p class="lede" style="margin-bottom:0">Blinds ${formatMoney(tbl.small_blind)} / ${formatMoney(tbl.big_blind)} · ${seatCount} Sitze${hs && hs.hand_no ? ` · Hand #${hs.hand_no}` : ''}${isFinished ? ' · Tisch abgeschlossen' : ''}</p></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" onclick="backToOnlineLobby()">← Lobby</button>
         ${!isFinished ? `<button class="btn btn-ghost btn-sm" onclick="addOnlineBuyin()">+ Nachkaufen</button>` : ''}
@@ -1059,13 +1066,12 @@ function renderOnlineTableView(){
       </div>
     </div>
     ${isFinished ? `<div class="panel" style="text-align:center;background:var(--btn-secondary-bg);"><strong>Dieser Tisch ist geschlossen.</strong> Das Ergebnis wurde als Session in die Statistik übernommen.</div>` : ''}
-    ${!isHeadsUpEngine ? `<div class="panel" style="text-align:center;color:#999;font-size:13px;">Dieser Tisch hat ${seatCount} Sitze — automatisches Karten-Austeilen gibt es bisher nur im Heads-up. Nutzt die App hier als Sitzplatz-/Buy-in-Tracker und spielt die Hände am echten Tisch; beim Schliessen übernimmt "Tisch schliessen" die Stände aller besetzten Plätze in die Statistik.</div>` : ''}
     <div class="panel table-pane" style="margin-bottom:16px;padding:0;position:relative;">
       <div class="poker-table-oval" style="${tableFeltStyleAttr(chosenLayout || {})}">
         ${seatsHtml}
         <div class="pot-center" style="${chosenLayout && chosenLayout.potX!=null && chosenLayout.potY!=null ? `left:${chosenLayout.potX}%;top:${chosenLayout.potY}%;transform:translate(-50%,-50%);` : ''}">
-          ${isHeadsUpEngine && hs && hs.board && hs.board.length ? `<div class="board-cards">${hs.board.map(cardChipHtml).join('')}</div>` : ''}
-          <div class="amt">${fmtChipPlain(isHeadsUpEngine && hs ? hs.pot : 0)}</div>
+          ${hs && hs.board && hs.board.length ? `<div class="board-cards">${hs.board.map(cardChipHtml).join('')}</div>` : ''}
+          <div class="amt">${fmtChipPlain(hs ? hs.pot : 0)}</div>
           <div class="lbl">Pot</div>
         </div>
       </div>
@@ -1082,9 +1088,22 @@ function renderOnlineTableView(){
       ${canClose ? `<button class="btn btn-secondary" onclick="closeOnlineTable()">Tisch schliessen &amp; Ergebnis übernehmen</button>` : ''}
     </div>` : ''}
     ${(!hs || !hs.hand_no) && seatedRows.length >= 2 && !seatedRows.every(s => s.player_id) ? `<div class="panel" style="text-align:center;color:#999;font-size:13px;">Hinweis: Ohne verknüpften Spieler (siehe Players-Tab) kann dieser Tisch später nicht in die Statistik übernommen werden.</div>` : ''}
-    ${isHeadsUpEngine && hs && hs.hand_over !== undefined && hs.hand_over && hs.winner_seat !== undefined ? `<div class="panel" style="text-align:center;"><strong>${hs.winner_seat === null ? 'Split Pot' : (hs.winner_seat === onlineMySeat ? 'Du gewinnst die Hand!' : 'Gegner gewinnt die Hand.')}</strong></div>` : ''}
-    ${myTurn ? renderOnlineActionBar(toCall, mySeatRow ? mySeatRow.stack : 0, hs) : (isHeadsUpEngine && hs && ['preflop','flop','turn','river'].includes(phase) ? `<div class="panel" style="text-align:center;color:#999;">Warte auf Gegner…</div>` : '')}
+    ${hs && hs.hand_over && hs.payouts ? `<div class="panel" style="text-align:center;"><strong>${renderOnlinePayoutSummary(hs.payouts)}</strong></div>` : ''}
+    ${myTurn ? renderOnlineActionBar(toCall, mySeatRow ? mySeatRow.stack : 0, hs) : (hs && ['preflop','flop','turn','river'].includes(phase) ? `<div class="panel" style="text-align:center;color:#999;">Warte auf ${escapeHtml(onlineSeatLabel(hs.current_seat))}…</div>` : '')}
   `;
+}
+
+// Zeigt, wer die(se) Hand gewonnen hat — payouts ist {seatNo: Betrag}, von
+// resolveMultiwayShowdown bzw. dem Fold-Kurzschluss geliefert (siehe
+// submit_action Edge Function). Mehrere Einträge = Split-Pot/Side-Pots.
+function renderOnlinePayoutSummary(payouts){
+  const entries = Object.keys(payouts).filter(s => payouts[s] > 0.0001);
+  if(!entries.length) return '';
+  const parts = entries.map(seatNo => {
+    const isMe = Number(seatNo) === onlineMySeat;
+    return `${escapeHtml(onlineSeatLabel(Number(seatNo)))}: +${formatMoney(payouts[seatNo])}${isMe ? ' (Du)' : ''}`;
+  });
+  return (entries.length > 1 ? 'Split Pot — ' : '') + parts.join(' · ');
 }
 
 function renderOnlineSeatPicker(tbl){
@@ -1110,7 +1129,8 @@ function renderOnlineSeatPicker(tbl){
 }
 
 function renderOnlineActionBar(toCall, myStack, hs){
-  const minRaiseTotal = (hs.bets ? (hs.bets[String(hs.current_seat===0?1:0)]||0) : 0) + (hs.last_raise_size || 0);
+  const currentMaxBet = hs.bets ? Math.max(0, ...Object.values(hs.bets).map(Number)) : 0;
+  const minRaiseTotal = currentMaxBet + (hs.last_raise_size || 0);
   return `
     <div class="panel action-pane" style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;padding:16px;">
       <button class="btn btn-ghost" onclick="callSubmitAction('fold')">Fold</button>

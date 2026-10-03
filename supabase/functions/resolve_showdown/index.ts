@@ -15,15 +15,15 @@
 //  - Ist die Hand wider Erwarten noch in phase='showdown' hängen
 //    geblieben (z. B. weil submit_action zwischen UPDATE und Broadcast
 //    abgebrochen ist), holt diese Funktion das nach: gleiche Logik wie in
-//    submit_action (resolveShowdown + Pot-Verteilung + History-Eintrag),
-//    nur ohne erneute Aktion entgegenzunehmen.
+//    submit_action (resolveMultiwayShowdown + Pot-Verteilung + History-
+//    Eintrag), nur ohne erneute Aktion entgegenzunehmen.
 //
-// Für Phase 0 bewusst als separater, manuell aufrufbarer Endpunkt gehalten
-// (wie im Architektur-Spezifikation-Interface vorgesehen), auch wenn der
-// Hauptpfad meist über submit_action läuft.
+// Mehrweg (2–10 Sitze): state.seat_order ersetzt die frühere feste
+// [0,1]-Annahme; Side-Pots und die "niemand muss zeigen"-Regel laufen
+// identisch zu submit_action über resolveMultiwayShowdown().
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { resolveShowdown } from '../_shared/poker.ts';
+import { resolveMultiwayShowdown } from '../_shared/poker.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -67,35 +67,41 @@ Deno.serve(async (req) => {
       return json({ error: 'not_at_showdown', phase: stateRow.phase }, 400);
     }
 
-    const sd = resolveShowdown(stateRow.hole_cards, stateRow.board);
-    const winnerSeat = sd.winnerSeat;
-    const potAmount = Number(stateRow.pot);
+    const seatOrder: number[] = stateRow.seat_order || [];
+    const sd = resolveMultiwayShowdown(
+      stateRow.hole_cards, stateRow.board, seatOrder, stateRow.folded, stateRow.contributions || {}, stateRow.last_aggressor ?? null,
+    );
+    const payouts = sd.payouts;
 
-    const { data: seatsRaw } = await admin.from('online_seats').select('seat_no, stack').eq('table_id', table_id).order('seat_no');
-    if (!seatsRaw || seatsRaw.length !== 2) return json({ error: 'table_not_ready' }, 400);
-    const stacks: Record<number, number> = { 0: Number(seatsRaw[0].stack), 1: Number(seatsRaw[1].stack) };
+    const { data: seatsRaw } = await admin.from('online_seats').select('seat_no, stack').eq('table_id', table_id).in('seat_no', seatOrder);
+    if (!seatsRaw || seatsRaw.length !== seatOrder.length) return json({ error: 'table_not_ready' }, 400);
+    const stacks: Record<number, number> = {};
+    for (const s of seatsRaw) stacks[s.seat_no] = Number(s.stack);
 
-    if (winnerSeat === null) {
-      await admin.from('online_seats').update({ stack: stacks[0] + potAmount / 2 }).eq('table_id', table_id).eq('seat_no', 0);
-      await admin.from('online_seats').update({ stack: stacks[1] + potAmount / 2 }).eq('table_id', table_id).eq('seat_no', 1);
-    } else {
-      await admin.from('online_seats').update({ stack: stacks[winnerSeat] + potAmount }).eq('table_id', table_id).eq('seat_no', winnerSeat);
+    for (const seatNo of Object.keys(payouts)) {
+      const amt = payouts[Number(seatNo)];
+      if (amt > 0.0001) {
+        await admin.from('online_seats').update({ stack: stacks[Number(seatNo)] + amt }).eq('table_id', table_id).eq('seat_no', Number(seatNo));
+      }
     }
 
-    const summary = { board: stateRow.board, hole_cards: stateRow.hole_cards, pot: potAmount, winner_seat: winnerSeat, phase_ended: 'showdown' };
+    const revealedHoleCards: Record<string, string[]> = {};
+    for (const s of sd.revealSeats) revealedHoleCards[s] = stateRow.hole_cards[String(s)];
+
+    const summary = { board: stateRow.board, revealed_hole_cards: revealedHoleCards, payouts, phase_ended: 'showdown' };
     await admin.from('online_hand_history').insert({ table_id, hand_no: stateRow.hand_no, summary });
-    await admin.from('online_hand_state').update({ phase: 'done', pot: 0 }).eq('table_id', table_id);
+    await admin.from('online_hand_state').update({ phase: 'done', pot: 0, revealed_hole_cards: revealedHoleCards }).eq('table_id', table_id);
 
     const publicChannel = admin.channel(`table:${table_id}:public`);
     await publicChannel.send({
       type: 'broadcast', event: 'state',
       payload: {
         phase: 'done', board: stateRow.board, pot: 0, current_seat: stateRow.current_seat,
-        hand_over: true, winner_seat: winnerSeat, revealed_hole_cards: stateRow.hole_cards,
+        hand_over: true, payouts, revealed_hole_cards: revealedHoleCards,
       },
     });
 
-    return json({ ok: true, already_resolved: false, winner_seat: winnerSeat, summary });
+    return json({ ok: true, already_resolved: false, payouts, summary });
   } catch (e) {
     return json({ error: String(e) }, 500);
   }
