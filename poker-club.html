@@ -370,6 +370,13 @@
      voneinander schmäler/breiter bzw. flacher/höher machen. */
   .poker-table-oval .poker-seat .seat-holecards .board-card{ font-size:1.3cqw; padding:0.15cqw 0.6cqw; width:calc(2.5em * var(--hole-card-w-scale, 1)); height:calc(3.5em * var(--hole-card-h-scale, 1)); }
   .poker-table-oval .seat-holecards .board-card{ font-size:1.3cqw; padding:0.15cqw 0.6cqw; width:calc(2.5em * var(--hole-card-w-scale, 1)); height:calc(3.5em * var(--hole-card-h-scale, 1)); }
+  /* Optionale Rückkehr zu kleinen, flachen Hole-Card-Rechtecken statt der grossen, hochformatigen
+     Kartenbilder — pro Layout einstellbar (layout.holeCardsCompact), nützlich wenn Avatar/Sitzgrafik
+     so angeordnet sind, dass die grossen Karten etwas überdecken (z.B. Avatar über der Sitzgrafik). */
+  .poker-table-oval .seat-holecards.compact .board-card,
+  .poker-table-oval .poker-seat .seat-holecards.compact .board-card{
+    width:auto; height:auto; min-width:1.8em; font-size:0.95cqw; padding:0.1cqw 0.4cqw; line-height:1.3;
+  }
   .board-card.red{ color:var(--card-red, var(--red)); }
   .board-card.black{ color:var(--card-black, #1a1a1a); }
   .board-card.green4c{ color:var(--card-green4c, #1E7B34); }
@@ -1015,7 +1022,7 @@ function onlinePokerSeatHtml(slot, seatRow, seatNo, hs, isMe){
   // Vertikaler Anker wie bei renderHandFlowUI: im Showdown dürfen die aufgedeckten
   // Karten komplett sichtbar sein (-55%), sonst wachsen sie überwiegend nach unten (-20%).
   const holeCardsVAnchor = (phase === 'showdown' || phase === 'done') ? -55 : -20;
-  const standaloneHoleCardsHtml = (!folded && cardsHtml) ? `<div class="seat-holecards" style="position:absolute;left:${slot.holeCardsX}%;top:${slot.holeCardsY}%;transform:translate(-50%,${holeCardsVAnchor}%) scale(${slot.holeCardsScale});z-index:${slot.zHoleCards!=null?slot.zHoleCards:3};">${cardsHtml}</div>` : '';
+  const standaloneHoleCardsHtml = (!folded && cardsHtml) ? `<div class="seat-holecards${slot.holeCardsCompact?' compact':''}" style="position:absolute;left:${slot.holeCardsX}%;top:${slot.holeCardsY}%;transform:translate(-50%,${holeCardsVAnchor}%) scale(${slot.holeCardsScale});z-index:${slot.zHoleCards!=null?slot.zHoleCards:3};">${cardsHtml}</div>` : '';
   const platePlateHtml = `
     <div class="seat-plate" style="${seatPlateBgStyleAttr(slot, useAbsoluteBox)}">
       ${!useAbsoluteName ? nameInnerHtml : ''}
@@ -7035,7 +7042,8 @@ function getSeatSlotsForRender(seatCount, sessionId, layoutOverride){
         boxImageAspect: layout.boxImageAspect || '92/132',
         boxHidden: !!layout.boxHidden,
         avatarOnTop: layout.avatarOnTop !== false,
-        textColor: layout.textColor || '#2A1D0F'
+        textColor: layout.textColor || '#2A1D0F',
+        holeCardsCompact: !!layout.holeCardsCompact
       };
     });
   }
@@ -7648,8 +7656,13 @@ function tableEditControlPanelHtml(layout, sessionId){
           <label style="display:block;font-size:12px;margin:8px 0 4px;">🂠 Board</label>
           <input type="range" min="50" max="200" step="0.5" value="${Math.round(layout.boardScale*100)}" oninput="updateTableEditField('boardScale', this.value/100)" style="width:100%;">
           <div style="margin-top:10px;padding:8px 10px;background:var(--paper);border:1px solid var(--paper-line);border-radius:8px;">
+            <label style="display:flex;align-items:center;gap:6px;font-weight:400;font-size:12px;margin-bottom:8px;">
+              <input type="checkbox" ${layout.holeCardsCompact?'checked':''} onchange="updateTableEditBooleanField('holeCardsCompact', this.checked)">
+              🂠 Hole Cards klein &amp; flach (wie früher) statt grosse Kartenbilder
+            </label>
+            <p class="lede" style="font-size:10px;margin:-4px 0 10px;">Nützlich, wenn Avatar/Sitzgrafik so angeordnet sind, dass die grossen, hochformatigen Hole Cards etwas überdecken (z.B. Avatar über der Sitzgrafik) — zeigt stattdessen kleine, flache Rechtecke wie vor der Kartenform-Umstellung.</p>
             <div style="font-weight:700;font-size:12px;margin-bottom:6px;">↔️↕️ Kartenform (stauchen/strecken, nicht zuschneiden)</div>
-            <p class="lede" style="font-size:10px;margin:-2px 0 8px;">Breite und Höhe der Karten getrennt verzerren — die Karte selbst (inkl. eigenem Bild) wird schmäler/breiter bzw. flacher/höher gezogen. Oben bei "Board"/"Holecards" wird nur insgesamt vergrössert/verkleinert, hier wird gezielt NUR eine Richtung verändert.</p>
+            <p class="lede" style="font-size:10px;margin:-2px 0 8px;">Breite und Höhe der Karten getrennt verzerren — die Karte selbst (inkl. eigenem Bild) wird schmäler/breiter bzw. flacher/höher gezogen. Oben bei "Board"/"Holecards" wird nur insgesamt vergrössert/verkleinert, hier wird gezielt NUR eine Richtung verändert. Hat keine Wirkung, solange "klein & flach" oben aktiv ist.</p>
             <label style="display:block;font-size:11px;margin-bottom:2px;">Board-Karten — Breite</label>
             <input type="range" min="50" max="200" step="1" value="${Math.round((layout.boardCardWScale!=null?layout.boardCardWScale:1)*100)}" oninput="updateTableEditField('boardCardWScale', this.value/100)" style="width:100%;">
             <label style="display:block;font-size:11px;margin:6px 0 2px;">Board-Karten — Höhe</label>
@@ -8013,7 +8026,7 @@ function tableEditOvalContentHtml(layout, totalSlots, getSeatPreview){
       // unten. Seit Karten echtes Hochformat (aspect-ratio 5/7) haben, reicht das bei vielen Tischen zu
       // weit nach oben ins Avatar-Gesicht. Bei -20% liegt der Ankerpunkt nahe der Kartenoberkante, die
       // Karte wächst also überwiegend NACH UNTEN — das gilt hier UND live identisch (Kohärenz).
-      html += `<div class="le-el seat-holecards" data-type="holeCards" data-index="${i}" style="position:absolute;left:${pos.holeCardsX}%;top:${pos.holeCardsY}%;transform:translate(-50%,-20%) scale(${pos.holeCardsScale});cursor:move;z-index:${pos.zHoleCards};${opacity}${isSel('holeCards')?'outline:3px solid var(--brass);outline-offset:2px;':''}">${blankCardHtml()}${blankCardHtml()}</div>`;
+      html += `<div class="le-el seat-holecards${pos.holeCardsCompact?' compact':''}" data-type="holeCards" data-index="${i}" style="position:absolute;left:${pos.holeCardsX}%;top:${pos.holeCardsY}%;transform:translate(-50%,-20%) scale(${pos.holeCardsScale});cursor:move;z-index:${pos.zHoleCards};${opacity}${isSel('holeCards')?'outline:3px solid var(--brass);outline-offset:2px;':''}">${blankCardHtml()}${blankCardHtml()}</div>`;
     }
     if(vis.posTag){
       // Klasse "pos-tag" (Schrift/Padding/Radius) direkt auf demselben Element wie Position/Transform
@@ -9788,7 +9801,7 @@ function renderHandFlowUI(s){
     // nach oben) statt -20% (Karte wächst überwiegend nach unten).
     const isShowdownReveal = handFlow.street === 'showdown';
     const holeCardsVAnchor = isShowdownReveal ? -55 : -20;
-    const standaloneHoleCardsHtml = (!folded) ? `<div class="seat-holecards" style="position:absolute;left:${pos.holeCardsX}%;top:${pos.holeCardsY}%;transform:translate(-50%,${holeCardsVAnchor}%) scale(${pos.holeCardsScale});z-index:${pos.zHoleCards!=null?pos.zHoleCards:3};">${holeCardsInner}</div>` : '';
+    const standaloneHoleCardsHtml = (!folded) ? `<div class="seat-holecards${pos.holeCardsCompact?' compact':''}" style="position:absolute;left:${pos.holeCardsX}%;top:${pos.holeCardsY}%;transform:translate(-50%,${holeCardsVAnchor}%) scale(${pos.holeCardsScale});z-index:${pos.zHoleCards!=null?pos.zHoleCards:3};">${holeCardsInner}</div>` : '';
     const platePlateHtml = `
         <div class="seat-plate" style="${seatPlateBgStyleAttr(pos, useAbsoluteBox)}">
           ${!useAbsoluteName ? nameInnerHtml : ''}
@@ -11064,7 +11077,7 @@ function newLayoutTemplateObj(name, seatCount){
     seats: positions.map(p => defaultSeatSlot(p.left, p.top)),
     clusterOffsets: defaultClusterOffsets(),
     boardX:50, boardY:46, boardScale:1,
-    boardCardWScale:1, boardCardHScale:1, holeCardWScale:1, holeCardHScale:1,
+    boardCardWScale:1, boardCardHScale:1, holeCardWScale:1, holeCardHScale:1, holeCardsCompact:false,
     potX:50, potY:56
   };
 }
