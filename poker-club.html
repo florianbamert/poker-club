@@ -864,6 +864,17 @@ async function reallyCloseOnlineTable(){
   setView('sessions');
 }
 
+async function addOnlineBuyin(){
+  const amt = prompt('Zusätzlicher Buy-in (Nachkauf)?', '50');
+  if(amt == null) return;
+  const amount = parseFloat(amt);
+  if(!(amount > 0)){ showToast('Ungültiger Betrag.'); return; }
+  const { error } = await sb.rpc('add_online_buyin', { p_table_id: currentOnlineTableId, p_amount: amount });
+  if(error){ showToast('Fehler: ' + error.message); return; }
+  await refreshOnlineTableAndSeat();
+  showToast('Nachkauf gebucht.');
+}
+
 async function callStartHand(){
   if(onlineBusy) return;
   onlineBusy = true;
@@ -924,6 +935,7 @@ function renderOnlineTableView(){
       <div><h1>Online-Tisch</h1><p class="lede" style="margin-bottom:0">Blinds ${formatMoney(tbl.small_blind)} / ${formatMoney(tbl.big_blind)} · Hand #${hs ? hs.hand_no||0 : 0}${isFinished ? ' · Tisch abgeschlossen' : ''}</p></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" onclick="backToOnlineLobby()">← Lobby</button>
+        ${!isFinished ? `<button class="btn btn-ghost btn-sm" onclick="addOnlineBuyin()">+ Nachkaufen</button>` : ''}
         ${!isFinished ? `<button class="btn btn-ghost btn-sm" onclick="leaveOnlineSeat()">Platz verlassen</button>` : ''}
       </div>
     </div>
@@ -1032,7 +1044,68 @@ function showLandingAfterLogin(){
   document.getElementById('landing').style.display = 'flex';
   populateLangSelects();
   applyStaticTexts();
-  renderMyClubsList();
+  if(getUrlParam('joincode')) handleInviteLinkIfPresent();
+  else renderMyClubsList();
+}
+
+/* ================= Einladungslinks (Club beitreten + Spieler verknüpfen in einem Schritt) =================
+   Ein Admin generiert pro Spieler-Eintrag einen Link wie .../?joincode=ABCDE&invite=<token>
+   (siehe generateInviteLink). Öffnet die eingeladene Person diesen Link, nachdem sie sich
+   eingeloggt hat, passiert automatisch: Club-Beitritt per Code (bestehender Mechanismus,
+   enterClubByCode) + Verknüpfung des Spieler-Eintrags mit ihrer E-Mail (statt dass ein Admin
+   das manuell im Players-Tab nachträgt). Falls der Beitritt noch auf Freischaltung durch einen
+   Admin wartet, wird das Invite-Token in localStorage gemerkt und beim nächsten normalen
+   Öffnen des Clubs (in enterClubUI) nachgeholt — die Person muss den Link dann nicht nochmal
+   anklicken. */
+function getUrlParam(name){
+  try { return new URLSearchParams(window.location.search).get(name); } catch(e){ return null; }
+}
+async function handleInviteLinkIfPresent(){
+  const joincode = getUrlParam('joincode');
+  const invite = getUrlParam('invite');
+  if(!joincode){ renderMyClubsList(); return; }
+  if(invite) localStorage.setItem('chipmate_pending_invite_' + joincode, invite);
+  const result = await enterClubByCode(joincode);
+  if(!result.ok){ showToast('Einladungslink ungültig — Club nicht gefunden.'); renderMyClubsList(); return; }
+  if(!result.joined){
+    showToast(`Beitrittsanfrage für "${result.clubName}" gesendet — wartet auf Freischaltung durch einen Admin. Öffne die App danach einfach nochmal normal.`);
+    renderMyClubsList();
+    return;
+  }
+  await rememberClub(currentCode, currentClub.info.name);
+  enterClubUI(); // ruft am Ende resolvePendingInvite() auf
+}
+function resolvePendingInvite(){
+  const token = getUrlParam('invite') || localStorage.getItem('chipmate_pending_invite_' + currentCode);
+  if(!token) return;
+  localStorage.removeItem('chipmate_pending_invite_' + currentCode);
+  if(window.history && window.history.replaceState) window.history.replaceState({}, '', window.location.pathname);
+  const player = currentClub.players.find(p => p.inviteToken === token);
+  if(!player) return; // Token schon benutzt/ungültig — einfach normal weitermachen, kein Fehler nötig
+  if(player.linkedEmail && player.linkedEmail.toLowerCase() !== currentUser.email.toLowerCase()){
+    showToast('Dieser Einladungslink ist bereits einem anderen Login zugeordnet.');
+    return;
+  }
+  player.linkedEmail = currentUser.email;
+  player.inviteToken = null;
+  saveClubData();
+  showToast(`Willkommen! Du bist jetzt mit "${fullName(player)}" verknüpft und kannst online mitspielen.`);
+  render();
+}
+async function generateInviteLink(id){
+  if(!isClubAdmin()) return;
+  const p = getPlayer(id);
+  if(!p || p.linkedEmail) return;
+  if(!p.inviteToken){
+    p.inviteToken = uid() + uid();
+    await saveClubData();
+  }
+  const url = `${window.location.origin}${window.location.pathname}?joincode=${encodeURIComponent(currentCode)}&invite=${encodeURIComponent(p.inviteToken)}`;
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(url).then(() => showToast('Einladungslink kopiert! Schick ihn an ' + fullName(p) + '.')).catch(() => prompt('Link kopieren:', url));
+  } else {
+    prompt('Link kopieren:', url);
+  }
 }
 async function bootAuth(){
   const { data } = await sb.auth.getSession();
@@ -1888,6 +1961,7 @@ function enterClubUI(){
   if(cleanupDuplicatedAvatarData()){
     saveClubData();
   }
+  resolvePendingInvite();
 }
 function leaveClub(){
   currentCode = null; currentClub = null; currentSessionId = null; currentClubId = null; myRole = null;
@@ -5228,6 +5302,10 @@ function openEditPlayerModal(id){
           <label>🔗 Verknüpfter Login (E-Mail) <span class="sublabel">${t('sublabel_optional')}</span></label>
           <input id="ep-linked-email" type="email" value="${escapeHtml(p.linkedEmail||'')}" placeholder="z.B. florian.bamert@gmail.com">
           <p class="hint" style="margin-top:4px;">Nur mit dieser Verknüpfung kann sich dieser Spieler selbst online an einen Tisch setzen — ohne Verknüpfung landen seine Online-Resultate nicht automatisch in der Statistik.</p>
+          ${p.linkedEmail
+            ? `<p class="hint" style="margin-top:4px;">✅ Bereits verknüpft. Zum Ändern E-Mail oben anpassen.</p>`
+            : `<button type="button" class="btn btn-ghost btn-sm" style="margin-top:6px;" onclick="generateInviteLink('${id}')">🔗 Einladungslink erzeugen &amp; kopieren</button>
+               <p class="hint" style="margin-top:4px;">Alternative zum manuellen Eintragen: schick diesen Link der Person — beim Öffnen (nach Login) wird sie automatisch mit diesem Spieler verknüpft.</p>`}
         </div>` : ''}
         <div id="ep-error"></div>
         <div class="modal-actions">
