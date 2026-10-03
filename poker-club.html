@@ -2441,7 +2441,7 @@ function readFileAsDataUrl(file){
 let cropState = null;
 function openCropModal(dataUrl, previewId, hiddenInputId, onComplete){
   const size = 260;
-  cropState = { previewId, hiddenInputId, onComplete, size, scaleX:1, scaleY:1, left:0, top:0, baseScale:1, naturalW:0, naturalH:0, dragging:false, startX:0, startY:0, startLeft:0, startTop:0 };
+  cropState = { previewId, hiddenInputId, onComplete, size, zoom:1, stretchX:1, stretchY:1, left:0, top:0, baseScale:1, naturalW:0, naturalH:0, dragging:false, startX:0, startY:0, startLeft:0, startTop:0 };
   const overlay = document.createElement('div');
   overlay.id = 'crop-overlay';
   overlay.className = 'modal-backdrop';
@@ -2449,11 +2449,14 @@ function openCropModal(dataUrl, previewId, hiddenInputId, onComplete){
   overlay.innerHTML = `
     <div class="modal" style="max-width:360px;text-align:center;">
       <h2>Avatar zuschneiden</h2>
-      <p class="lede" style="margin-top:-6px;">Ziehen zum Verschieben. Breite und Höhe ziehen das Bild selbst unabhängig voneinander breiter oder höher.</p>
+      <p class="lede" style="margin-top:-6px;">Ziehen zum Verschieben (auch über den Rand hinaus). Zoom vergrössert das Bild, Breite/Höhe strecken es zusätzlich unabhängig voneinander.</p>
       <div id="crop-container" style="position:relative;width:${size}px;height:${size}px;margin:0 auto;overflow:hidden;border-radius:14px;background:repeating-conic-gradient(#ddd 0% 25%, #fff 0% 50%) 50% / 16px 16px;touch-action:none;cursor:grab;">
         <img id="crop-img" style="position:absolute;left:0;top:0;user-select:none;-webkit-user-drag:none;">
       </div>
-      <label style="display:block;text-align:left;font-weight:400;margin-top:16px;font-size:13px;">Breite
+      <label style="display:block;text-align:left;font-weight:400;margin-top:16px;font-size:13px;">Zoom
+        <input type="range" id="crop-zoom" min="40" max="300" value="100" style="width:100%;" oninput="updateCropZoom(this.value)">
+      </label>
+      <label style="display:block;text-align:left;font-weight:400;margin-top:6px;font-size:13px;">Breite
         <input type="range" id="crop-stretch-x" min="40" max="300" value="100" style="width:100%;" oninput="updateCropStretch('x', this.value)">
       </label>
       <label style="display:block;text-align:left;font-weight:400;margin-top:6px;font-size:13px;">Höhe
@@ -2502,9 +2505,15 @@ function closeCropOverlay(){
   cropState = null;
 }
 function cancelCrop(){ closeCropOverlay(); }
+// Effektiver Massstab je Achse = Zoom (gemeinsam für beide Achsen) * individueller
+// Breite/Höhe-Streckfaktor. So zoomt der Zoom-Regler gleichmässig (und schafft damit
+// Spielraum zum freien Verschieben über den Rand hinaus), während Breite/Höhe
+// zusätzlich unabhängig voneinander stauchen/strecken.
+function cropScaleX(){ return cropState.zoom * cropState.stretchX; }
+function cropScaleY(){ return cropState.zoom * cropState.stretchY; }
 function clampCropOffset(){
-  const { size, naturalW, naturalH, baseScale, scaleX, scaleY } = cropState;
-  const w = naturalW*baseScale*scaleX, h = naturalH*baseScale*scaleY;
+  const { size, naturalW, naturalH, baseScale } = cropState;
+  const w = naturalW*baseScale*cropScaleX(), h = naturalH*baseScale*cropScaleY();
   const minLeft = Math.min(0, size-w), maxLeft = Math.max(0, size-w);
   cropState.left = Math.min(maxLeft, Math.max(minLeft, cropState.left));
   const minTop = Math.min(0, size-h), maxTop = Math.max(0, size-h);
@@ -2513,29 +2522,44 @@ function clampCropOffset(){
 function applyCropTransform(){
   const img = document.getElementById('crop-img');
   if(!img) return;
-  const { naturalW, naturalH, baseScale, scaleX, scaleY, left, top } = cropState;
-  img.style.width = (naturalW*baseScale*scaleX)+'px';
-  img.style.height = (naturalH*baseScale*scaleY)+'px';
+  const { naturalW, naturalH, baseScale, left, top } = cropState;
+  img.style.width = (naturalW*baseScale*cropScaleX())+'px';
+  img.style.height = (naturalH*baseScale*cropScaleY())+'px';
   img.style.left = left+'px';
   img.style.top = top+'px';
 }
-// Breite/Höhe unabhängig voneinander ziehen: das Crop-Fenster bleibt fix (quadratisch),
-// stattdessen wird das Bild selbst auf der jeweiligen Achse gestreckt/gestaucht — der
-// Bildmittelpunkt bleibt dabei an derselben Stelle stehen (kein Verschieben), nur die
-// angefasste Achse ändert sich.
+// Zoom: vergrössert das Bild auf BEIDEN Achsen gleichmässig (wie gewohnt) und schafft
+// damit Raum, um frei zu verschieben — z.B. um bei einem KI-Avatar, der nur bis zum
+// Bauchnabel geht, weiter nach unten zu ziehen und mehr vom Oberkörper zu zeigen.
+function updateCropZoom(val){
+  const oldZoom = cropState.zoom;
+  const newZoom = Number(val)/100;
+  const { size } = cropState;
+  const cx = size/2, cy = size/2;
+  const ratio = newZoom/oldZoom;
+  cropState.left = cx - (cx - cropState.left) * ratio;
+  cropState.top = cy - (cy - cropState.top) * ratio;
+  cropState.zoom = newZoom;
+  clampCropOffset();
+  applyCropTransform();
+}
+// Breite/Höhe unabhängig voneinander ziehen: strecken/stauchen das Bild zusätzlich zum
+// Zoom auf nur einer Achse, ohne es zu verschieben.
 function updateCropStretch(axis, val){
   const newScale = Number(val)/100;
   const { size } = cropState;
   if(axis === 'x'){
-    const oldScale = cropState.scaleX;
+    const oldEff = cropState.zoom*cropState.stretchX;
+    cropState.stretchX = newScale;
+    const newEff = cropState.zoom*cropState.stretchX;
     const cx = size/2;
-    cropState.left = cx - (cx - cropState.left) * (newScale/oldScale);
-    cropState.scaleX = newScale;
+    cropState.left = cx - (cx - cropState.left) * (newEff/oldEff);
   } else {
-    const oldScale = cropState.scaleY;
+    const oldEff = cropState.zoom*cropState.stretchY;
+    cropState.stretchY = newScale;
+    const newEff = cropState.zoom*cropState.stretchY;
     const cy = size/2;
-    cropState.top = cy - (cy - cropState.top) * (newScale/oldScale);
-    cropState.scaleY = newScale;
+    cropState.top = cy - (cy - cropState.top) * (newEff/oldEff);
   }
   clampCropOffset();
   applyCropTransform();
@@ -2553,10 +2577,10 @@ function removeWhiteBackground(ctx, w, h){
   ctx.putImageData(imgData, 0, 0);
 }
 function confirmCrop(){
-  const { size, baseScale, scaleX, scaleY, left, top, onComplete } = cropState;
+  const { size, baseScale, left, top, onComplete } = cropState;
   const img = document.getElementById('crop-img');
   try{
-    const effScaleX = baseScale*scaleX, effScaleY = baseScale*scaleY;
+    const effScaleX = baseScale*cropScaleX(), effScaleY = baseScale*cropScaleY();
     const sourceX = -left/effScaleX, sourceY = -top/effScaleY;
     const sourceW = size/effScaleX, sourceH = size/effScaleY;
     // Die Ausgabe ist immer ein festes Quadrat (Crop-Fenster ändert sich nicht) —
