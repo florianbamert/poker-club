@@ -1067,12 +1067,14 @@ function renderOnlineTableView(){
     </div>
     ${isFinished ? `<div class="panel" style="text-align:center;background:var(--btn-secondary-bg);"><strong>Dieser Tisch ist geschlossen.</strong> Das Ergebnis wurde als Session in die Statistik übernommen.</div>` : ''}
     <div class="panel table-pane" style="margin-bottom:16px;padding:0;position:relative;">
-      <div class="poker-table-oval" style="${tableFeltStyleAttr(chosenLayout || {})}">
-        ${seatsHtml}
-        <div class="pot-center" style="${chosenLayout && chosenLayout.potX!=null && chosenLayout.potY!=null ? `left:${chosenLayout.potX}%;top:${chosenLayout.potY}%;transform:translate(-50%,-50%);` : ''}">
-          ${hs && hs.board && hs.board.length ? `<div class="board-cards">${hs.board.map(cardChipHtml).join('')}</div>` : ''}
-          <div class="amt">${fmtChipPlain(hs ? hs.pot : 0)}</div>
-          <div class="lbl">Pot</div>
+      <div class="table-bg-wrap" style="${tableOuterBgStyleAttr(null, chosenLayout || {})}padding:10px;">
+        <div class="poker-table-oval" style="${tableFeltStyleAttr(chosenLayout || {})}">
+          ${seatsHtml}
+          <div class="pot-center" style="${chosenLayout && chosenLayout.potX!=null && chosenLayout.potY!=null ? `left:${chosenLayout.potX}%;top:${chosenLayout.potY}%;transform:translate(-50%,-50%);` : ''}">
+            ${hs && hs.board && hs.board.length ? `<div class="board-cards">${hs.board.map(cardChipHtml).join('')}</div>` : ''}
+            <div class="amt">${fmtChipPlain(hs ? hs.pot : 0)}</div>
+            <div class="lbl">Pot</div>
+          </div>
         </div>
       </div>
       ${!isFinished && matchingLayouts.length ? `
