@@ -726,6 +726,18 @@ async function createOnlineTable(){
   await loadOnlineTables();
 }
 
+// Wählt ein eigenes Table-Designer-Layout (nur seatCount===2) für diesen Online-Tisch
+// — geteilt zwischen beiden Sitzenden, siehe chipmate_online_poker_phase0_layout.sql.
+// layoutId bleibt ein unverbindlicher Verweis auf layoutTemplates (club_data-JSON);
+// ein gelöschtes/ungültiges Layout fällt beim Rendern einfach auf den Standard-Tisch zurück.
+async function setOnlineTableLayout(tableId, layoutId){
+  const tbl = onlineTables.find(x => x.id === tableId);
+  if(tbl) tbl.layout_id = layoutId || null; // optimistisch, damit die Auswahl sofort sichtbar ist
+  render();
+  const { error } = await sb.from('online_tables').update({ layout_id: layoutId || null }).eq('id', tableId);
+  if(error){ showToast('Fehler: ' + error.message); await loadOnlineTables(); }
+}
+
 function deleteOnlineTablePrompt(tableId){
   showConfirmModal('Diesen Online-Tisch wirklich löschen? Das kann nicht rückgängig gemacht werden.', `reallyDeleteOnlineTable('${tableId}')`, 'Löschen');
 }
@@ -912,18 +924,30 @@ function onlineSeatLabel(seatNo){
   return escapeHtml(name || ('Spieler ' + (seatNo+1))) + (seat.user_id === currentUser.id ? ' (Du)' : '');
 }
 
-// Baut EINEN Sitzplatz für die grosse ovale Tisch-Grafik — bewusst eine eigene,
-// einfache Funktion statt des vollen Table-Designer-Systems (getSeatSlotsForRender/
-// Custom-Layouts): für genau 2 Sitze reichen zwei feste Positionen (oben/unten),
-// siehe Recherche zu seatPositions(2). Nutzt dieselben CSS-Klassen/Helper wie der
-// Live-Hand-Tisch (poker-seat, avatarHtml, cardChipHtml, blankCardHtml, fmtChipPlain),
-// damit es optisch identisch aussieht.
-function onlinePokerSeatHtml(pos, seatRow, seatNo, hs, revealAll, isMe){
+// Baut EINEN Sitzplatz für die grosse ovale Tisch-Grafik. Konsumiert dieselben
+// reichhaltigen Slot-Objekte wie renderHandFlowUI() (via getSeatSlotsForRender),
+// damit ein eigenes Table-Designer-Layout (Sitzgrafik, Name-/Stack-/Holecards-
+// Position, Textfarbe etc.) am Online-Tisch GENAU so greift wie im
+// Handerfassungsmodus — siehe dort für die ausführliche Begründung von
+// useAbsoluteBox/useAbsoluteName/useAbsoluteStack. Ohne gewähltes Layout liefert
+// getSeatSlotsForRender die generische Kreis-Position (seatPositions), die
+// Darstellung bleibt dann wie zuvor.
+function onlinePokerSeatHtml(slot, seatRow, seatNo, hs, revealAll, isMe){
+  const useAbsoluteBox = slot.boxX != null && slot.boxY != null;
+  const useAbsoluteName = slot.nameX != null && slot.nameY != null;
+  const useAbsoluteStack = slot.stackX != null && slot.stackY != null;
+  const textColor = slot.textColor || tableSettings.nameColor;
+
   if(!seatRow || !seatRow.user_id){
-    return `<div class="poker-seat" style="left:${pos.left}%;top:${pos.top}%;width:6.2%;opacity:.45;">
-      <div class="seat-name" style="color:${tableSettings.nameColor};">Frei</div>
-    </div>`;
+    const nameInnerHtml = `<div class="seat-name" style="color:${textColor};transform:scale(${slot.nameScale});transform-origin:center;">Frei</div>`;
+    const standaloneNameHtml = useAbsoluteName ? `<div style="position:absolute;left:${slot.nameX}%;top:${slot.nameY}%;transform:translate(-50%,-50%);z-index:5;max-width:16cqw;">${nameInnerHtml}</div>` : '';
+    const platePlateHtml = `<div class="seat-plate" style="${seatPlateBgStyleAttr(slot, useAbsoluteBox)}">${!useAbsoluteName ? nameInnerHtml : ''}</div>`;
+    return `
+      <div class="poker-seat" style="left:${slot.left}%;top:${slot.top}%;width:${avatarSizePercent(slot.avatarScale)}%;opacity:.45;z-index:${slot.zAvatar!=null?slot.zAvatar:2};">
+        ${!useAbsoluteBox ? platePlateHtml : ''}
+      </div>${useAbsoluteBox ? platePlateHtml : ''}${standaloneNameHtml}`;
   }
+
   const playerObj = seatRow.player_id ? currentClub.players.find(x => x.id === seatRow.player_id) : null;
   const displayObj = playerObj || { firstName: seatRow.user_email || 'Spieler', lastName:'', avatarColor:'#8A8A8A' };
   const phase = hs ? hs.phase : 'waiting';
@@ -940,15 +964,28 @@ function onlinePokerSeatHtml(pos, seatRow, seatNo, hs, revealAll, isMe){
   } else if(!isMe){
     cardsHtml = blankCardHtml() + blankCardHtml();
   }
-  return `
-    <div class="poker-seat${isActor?' active':''}" style="left:${pos.left}%;top:${pos.top}%;width:6.2%;${folded?'opacity:.45;':''}">
-      ${isDealer ? `<div class="pos-tag" style="position:absolute;left:50%;top:-22px;transform:translateX(-50%);background:var(--brass);color:#fff;">BTN</div>` : ''}
-      ${avatarHtml(displayObj, "margin:0 auto;")}
-      <div class="seat-name" style="color:${tableSettings.nameColor};">${escapeHtml(fullName(displayObj))}${isMe?' (Du)':''}</div>
-      ${cardsHtml ? `<div class="seat-holecards">${cardsHtml}</div>` : ''}
-      <div class="seat-stack" style="color:${tableSettings.nameColor};">${fmtChipPlain(seatRow.stack)}</div>
-      ${folded ? `<div class="action-badge" style="background:#8A8A8A;">FOLD</div>` : ''}
+
+  const nameInnerHtml = `<div class="seat-name${isActor?' seat-turn-blink':''}" style="color:${textColor};transform:scale(${slot.nameScale});transform-origin:center;">${escapeHtml(fullName(displayObj))}${isMe?' (Du)':''}</div>`;
+  const stackRowHtml = `<div class="stack-row"><div class="seat-stack">${fmtChipPlain(seatRow.stack)}</div></div>${folded ? `<div class="action-badge" style="background:#8A8A8A;">FOLD</div>` : ''}`;
+  const stackInnerHtml = `<div class="${isActor?'seat-turn-blink':''}" style="color:${textColor};transform:scale(${slot.stackScale});transform-origin:center;">${stackRowHtml}</div>`;
+  const standaloneNameHtml = useAbsoluteName ? `<div style="position:absolute;left:${slot.nameX}%;top:${slot.nameY}%;transform:translate(-50%,-50%);z-index:5;max-width:16cqw;">${nameInnerHtml}</div>` : '';
+  const standaloneStackHtml = useAbsoluteStack ? `<div style="position:absolute;left:${slot.stackX}%;top:${slot.stackY}%;transform:translate(-50%,-50%);z-index:5;">${stackInnerHtml}</div>` : '';
+  // Vertikaler Anker wie bei renderHandFlowUI: im Showdown dürfen die aufgedeckten
+  // Karten komplett sichtbar sein (-55%), sonst wachsen sie überwiegend nach unten (-20%).
+  const holeCardsVAnchor = (phase === 'showdown' || phase === 'done') ? -55 : -20;
+  const standaloneHoleCardsHtml = (!folded && cardsHtml) ? `<div class="seat-holecards" style="position:absolute;left:${slot.holeCardsX}%;top:${slot.holeCardsY}%;transform:translate(-50%,${holeCardsVAnchor}%) scale(${slot.holeCardsScale});z-index:${slot.zHoleCards!=null?slot.zHoleCards:3};">${cardsHtml}</div>` : '';
+  const platePlateHtml = `
+    <div class="seat-plate" style="${seatPlateBgStyleAttr(slot, useAbsoluteBox)}">
+      ${!useAbsoluteName ? nameInnerHtml : ''}
+      ${!useAbsoluteStack ? stackInnerHtml : ''}
     </div>`;
+  const standalonePosTagHtml = isDealer ? `<div class="pos-tag" style="position:absolute;left:${slot.posTagX}%;top:${slot.posTagY}%;transform:translate(-50%,-50%) rotate(${slot.posTagRotation}deg) scale(${slot.posTagScale});z-index:5;background:${tableSettings.posColor};color:#fff;">BTN</div>` : '';
+
+  return `
+    <div class="poker-seat${folded?' folded':''}${isActor?' active':''}" style="left:${slot.left}%;top:${slot.top}%;width:${avatarSizePercent(slot.avatarScale)}%;z-index:${slot.zAvatar!=null?slot.zAvatar:2};">
+      ${avatarHtml(displayObj, avatarSeatStyleAttr(slot.avatarScale, slot.zAvatar))}
+      ${!useAbsoluteBox ? platePlateHtml : ''}
+    </div>${useAbsoluteBox ? platePlateHtml : ''}${standaloneNameHtml}${standaloneStackHtml}${standaloneHoleCardsHtml}${standalonePosTagHtml}`;
 }
 
 function renderOnlineTableView(){
@@ -969,6 +1006,24 @@ function renderOnlineTableView(){
   const canClose = !isFinished && (!hs || phase === 'done' || phase === 'waiting') && mySeatRow && oppSeatRow && mySeatRow.user_id && oppSeatRow.user_id && mySeatRow.player_id && oppSeatRow.player_id;
   const revealOpp = hs && hs.hole_cards && (phase === 'showdown' || phase === 'done');
 
+  // Eigenes Table-Designer-Layout statt generischer Oval-Positionen — identisch zum
+  // Handerfassungsmodus (dort: getActiveLayout(sessionId)/getSeatSlotsForRender).
+  // Online-Tische haben keine echte Session-id, darum per layoutOverride direkt das
+  // gewählte Layout (online_tables.layout_id) reinreichen, statt über sessionLayoutMap
+  // zu gehen. Nur Layouts mit exakt 2 Sitzen sind sinnvoll (siehe Layout-Auswahl unten).
+  const heads2Layouts = layoutTemplates.filter(lt => lt.seatCount === 2);
+  const chosenLayout = tbl.layout_id ? heads2Layouts.find(lt => lt.id === tbl.layout_id) || null : null;
+  const slots = getSeatSlotsForRender(2, null, chosenLayout);
+  const oppSlot = slots[oppSeat] || slots[0];
+  const mySlot = slots[onlineMySeat] || slots[1];
+  // getSeatSlotsForRender(2, null, chosenLayout) already passes chosenLayout explicitly as
+  // layoutOverride, so a null chosenLayout correctly falls through to the generic seatPositions(2)
+  // circle inside that function (sessionId=null there is harmless). tableFeltStyleAttr() is
+  // different: it does `layoutOverride || getActiveLayout()`, and a falsy chosenLayout would make it
+  // fall back to getActiveLayout() with NO sessionId — which can resolve to whatever layout is active
+  // for an unrelated Hands-tab session (handsSelectedSessionId). Passing {} instead of null below
+  // keeps tableFeltStyleAttr on its "no custom layout" default-felt branch without that leak.
+
   return `
     <div class="view-head">
       <div><h1>Online-Tisch</h1><p class="lede" style="margin-bottom:0">Blinds ${formatMoney(tbl.small_blind)} / ${formatMoney(tbl.big_blind)} · Hand #${hs ? hs.hand_no||0 : 0}${isFinished ? ' · Tisch abgeschlossen' : ''}</p></div>
@@ -979,18 +1034,25 @@ function renderOnlineTableView(){
       </div>
     </div>
     ${isFinished ? `<div class="panel" style="text-align:center;background:var(--btn-secondary-bg);"><strong>Dieser Tisch ist geschlossen.</strong> Das Ergebnis wurde als Session in die Statistik übernommen.</div>` : ''}
-    <div class="panel table-pane" style="margin-bottom:16px;padding:0;">
-      <div class="poker-table-oval" style="${tableFeltStyleAttr()}">
-        ${onlinePokerSeatHtml({left:50, top:15}, oppSeatRow, oppSeat, hs, revealOpp, false)}
-        ${onlinePokerSeatHtml({left:50, top:85}, mySeatRow, onlineMySeat, hs, revealOpp, true)}
-        ${oppSeatRow && oppBet > 0 ? betLineChipHtml({left:50, top:15}, oppBet, null) : ''}
-        ${mySeatRow && myBet > 0 ? betLineChipHtml({left:50, top:85}, myBet, null) : ''}
-        <div class="pot-center">
+    <div class="panel table-pane" style="margin-bottom:16px;padding:0;position:relative;">
+      <div class="poker-table-oval" style="${tableFeltStyleAttr(chosenLayout || {})}">
+        ${onlinePokerSeatHtml(oppSlot, oppSeatRow, oppSeat, hs, revealOpp, false)}
+        ${onlinePokerSeatHtml(mySlot, mySeatRow, onlineMySeat, hs, revealOpp, true)}
+        ${oppSeatRow && oppBet > 0 ? betLineChipHtml(oppSlot, oppBet, null) : ''}
+        ${mySeatRow && myBet > 0 ? betLineChipHtml(mySlot, myBet, null) : ''}
+        <div class="pot-center" style="${chosenLayout && chosenLayout.potX!=null && chosenLayout.potY!=null ? `left:${chosenLayout.potX}%;top:${chosenLayout.potY}%;transform:translate(-50%,-50%);` : ''}">
           ${hs && hs.board && hs.board.length ? `<div class="board-cards">${hs.board.map(cardChipHtml).join('')}</div>` : ''}
           <div class="amt">${fmtChipPlain(hs ? hs.pot : 0)}</div>
           <div class="lbl">Pot</div>
         </div>
       </div>
+      ${!isFinished && heads2Layouts.length ? `
+      <div style="position:absolute;bottom:16px;left:16px;z-index:8;">
+        <select onchange="setOnlineTableLayout('${tbl.id}', this.value||null)" style="font-size:12px;padding:5px 6px;border-radius:6px;" title="Tisch-Layout für diesen Online-Tisch">
+          <option value="">Standard-Tisch</option>
+          ${heads2Layouts.map(lt => `<option value="${lt.id}" ${chosenLayout && chosenLayout.id===lt.id ? 'selected':''}>${escapeHtml(lt.name)}</option>`).join('')}
+        </select>
+      </div>` : ''}
     </div>
     ${canStart || canClose ? `<div class="panel" style="text-align:center;display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
       ${canStart ? `<button class="btn btn-primary" onclick="callStartHand()">${hs && hs.hand_no ? 'Nächste Hand starten' : 'Hand starten'}</button>` : ''}
