@@ -702,7 +702,7 @@ function openNewOnlineTableModal(){
     <div class="modal-backdrop" onclick="if(event.target===this) closeModal()">
       <div class="modal">
         <h2>Neuer Online-Tisch</h2>
-        <p class="hint">Automatisches Karten-Austeilen gibt es bisher nur im Heads-up (2 Sitze). Grössere Tische (6/10 Sitze) kannst du trotzdem anlegen — dort dienen Sitzplatz, Buy-ins und Stack als digitales Tracking für eure echte Partie, inkl. eurem Tisch-Layout; die Hände selbst tragt ihr dann wie gewohnt am Tisch aus.</p>
+        <p class="hint">Das automatische Karten-Austeilen (Dealing, Setzrunden, Showdown) funktioniert für 2 bis 10 Sitze.</p>
         <div class="field-row">
           <div class="field"><label>Sitzplätze</label>
             <select id="ot-seatcount">
@@ -717,7 +717,7 @@ function openNewOnlineTableModal(){
           <div class="field"><label>Big Blind</label><input id="ot-bb" type="number" min="0" step="0.5" value="1"></div>
         </div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
-          <button class="btn btn-ghost btn-sm" onclick="closeModal()">${t('btn_cancel')}</button>
+          <button class="btn btn-secondary btn-sm" onclick="closeModal()">${t('btn_cancel')}</button>
           <button class="btn btn-primary btn-sm" onclick="createOnlineTable()">${t('btn_create')}</button>
         </div>
       </div>
@@ -1060,9 +1060,9 @@ function renderOnlineTableView(){
     <div class="view-head">
       <div><h1>Online-Tisch</h1><p class="lede" style="margin-bottom:0">Blinds ${formatMoney(tbl.small_blind)} / ${formatMoney(tbl.big_blind)} · ${seatCount} Sitze${hs && hs.hand_no ? ` · Hand #${hs.hand_no}` : ''}${isFinished ? ' · Tisch abgeschlossen' : ''}</p></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <button class="btn btn-ghost btn-sm" onclick="backToOnlineLobby()">← Lobby</button>
-        ${!isFinished ? `<button class="btn btn-ghost btn-sm" onclick="addOnlineBuyin()">+ Nachkaufen</button>` : ''}
-        ${!isFinished ? `<button class="btn btn-ghost btn-sm" onclick="leaveOnlineSeat()">Platz verlassen</button>` : ''}
+        <button class="btn btn-secondary btn-sm" onclick="backToOnlineLobby()">← Lobby</button>
+        ${!isFinished ? `<button class="btn btn-secondary btn-sm" onclick="addOnlineBuyin()">+ Nachkaufen</button>` : ''}
+        ${!isFinished ? `<button class="btn btn-secondary btn-sm" onclick="leaveOnlineSeat()">Platz verlassen</button>` : ''}
       </div>
     </div>
     ${isFinished ? `<div class="panel" style="text-align:center;background:var(--btn-secondary-bg);"><strong>Dieser Tisch ist geschlossen.</strong> Das Ergebnis wurde als Session in die Statistik übernommen.</div>` : ''}
@@ -1111,7 +1111,7 @@ function renderOnlineSeatPicker(tbl){
   return `
     <div class="view-head">
       <div><h1>Online-Tisch</h1><p class="lede" style="margin-bottom:0">Blinds ${formatMoney(tbl.small_blind)} / ${formatMoney(tbl.big_blind)} · ${seatCount} Sitze</p></div>
-      <button class="btn btn-ghost btn-sm" onclick="backToOnlineLobby()">← Lobby</button>
+      <button class="btn btn-secondary btn-sm" onclick="backToOnlineLobby()">← Lobby</button>
     </div>
     <div style="display:flex;gap:16px;justify-content:center;flex-wrap:wrap;">
       ${Array.from({length: seatCount}, (_, seatNo) => seatNo).map(seatNo => {
@@ -1133,7 +1133,7 @@ function renderOnlineActionBar(toCall, myStack, hs){
   const minRaiseTotal = currentMaxBet + (hs.last_raise_size || 0);
   return `
     <div class="panel action-pane" style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;padding:16px;">
-      <button class="btn btn-ghost" onclick="callSubmitAction('fold')">Fold</button>
+      <button class="btn btn-secondary" onclick="callSubmitAction('fold')">Fold</button>
       ${toCall <= 0 ? `<button class="btn btn-secondary" onclick="callSubmitAction('check')">Check</button>`
                      : `<button class="btn btn-secondary" onclick="callSubmitAction('call')">Call ${formatMoney(toCall)}</button>`}
       <input id="online-raise-input" type="number" min="${minRaiseTotal}" step="${hs.last_raise_size||1}" placeholder="Betrag (gesamt)" value="${onlineRaiseAmount}" style="width:120px;padding:11px 12px;border-radius:8px;border:1px solid var(--paper-line);background:var(--paper);color:var(--ink);" oninput="onlineRaiseAmount=this.value">
@@ -5489,7 +5489,7 @@ function openEditPlayerModal(id){
           <p class="hint" style="margin-top:4px;">Nur mit dieser Verknüpfung kann sich dieser Spieler selbst online an einen Tisch setzen — ohne Verknüpfung landen seine Online-Resultate nicht automatisch in der Statistik.</p>
           ${p.linkedEmail
             ? `<p class="hint" style="margin-top:4px;">✅ Bereits verknüpft. Zum Ändern E-Mail oben anpassen.</p>`
-            : `<button type="button" class="btn btn-ghost btn-sm" style="margin-top:6px;" onclick="generateInviteLink('${id}')">🔗 Einladungslink erzeugen &amp; kopieren</button>
+            : `<button type="button" class="btn btn-secondary btn-sm" style="margin-top:6px;" onclick="generateInviteLink('${id}')">🔗 Einladungslink erzeugen &amp; kopieren</button>
                <p class="hint" style="margin-top:4px;">Alternative zum manuellen Eintragen: schick diesen Link der Person — beim Öffnen (nach Login) wird sie automatisch mit diesem Spieler verknüpft.</p>`}
         </div>` : ''}
         <div id="ep-error"></div>
