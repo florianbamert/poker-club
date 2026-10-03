@@ -637,6 +637,10 @@ let onlinePublicChannel = null;   // Realtime-Kanal-Handle: table:<id>:public
 let onlinePrivateChannel = null;  // Realtime-Kanal-Handle: table:<id>:seat:<n> (privat)
 let onlineBusy = false;           // verhindert Doppelklicks während ein Edge-Function-Call läuft
 let onlineRaiseAmount = '';       // Eingabefeld-Wert für Bet/Raise
+// Persönliche Layout-Wahl für den aktuell offenen Tisch — unabhängig von dem, was andere Sitzende
+// sehen (siehe online_layout_prefs). undefined = noch nicht geladen/keine eigene Wahl getroffen
+// (dann gilt tbl.layout_id als Fallback), null = bewusst "Standard-Tisch" gewählt, string = eigenes Layout.
+let onlineMyLayoutPref = undefined;
 
 function cleanupOnlineChannels(){
   if(onlinePublicChannel){ sb.removeChannel(onlinePublicChannel); onlinePublicChannel = null; }
@@ -650,6 +654,7 @@ function resetOnlineTableState(){
   onlineHandState = null;
   onlineMyHoleCards = null;
   onlineRaiseAmount = '';
+  onlineMyLayoutPref = undefined;
 }
 
 async function loadOnlineTables(){
@@ -736,16 +741,18 @@ async function createOnlineTable(){
   await loadOnlineTables();
 }
 
-// Wählt ein eigenes Table-Designer-Layout (nur seatCount===2) für diesen Online-Tisch
-// — geteilt zwischen beiden Sitzenden, siehe chipmate_online_poker_phase0_layout.sql.
-// layoutId bleibt ein unverbindlicher Verweis auf layoutTemplates (club_data-JSON);
-// ein gelöschtes/ungültiges Layout fällt beim Rendern einfach auf den Standard-Tisch zurück.
-async function setOnlineTableLayout(tableId, layoutId){
-  const tbl = onlineTables.find(x => x.id === tableId);
-  if(tbl) tbl.layout_id = layoutId || null; // optimistisch, damit die Auswahl sofort sichtbar ist
+// Jede Person wählt ihr eigenes Table-Designer-Layout für diesen Tisch — die Wahl ist rein
+// persönlich (online_layout_prefs) und beeinflusst NICHT, was andere Sitzende sehen. layoutId bleibt
+// ein unverbindlicher Verweis auf layoutTemplates (club_data-JSON); ein gelöschtes/ungültiges Layout
+// fällt beim Rendern einfach auf den Standard-Tisch zurück.
+async function setMyOnlineLayoutPref(tableId, layoutId){
+  onlineMyLayoutPref = layoutId || null; // optimistisch, damit die Auswahl sofort sichtbar ist
   render();
-  const { error } = await sb.from('online_tables').update({ layout_id: layoutId || null }).eq('id', tableId);
-  if(error){ showToast('Fehler: ' + error.message); await loadOnlineTables(); }
+  const { error } = await sb.from('online_layout_prefs').upsert(
+    { table_id: tableId, user_id: currentUser.id, layout_id: layoutId || null, updated_at: new Date().toISOString() },
+    { onConflict: 'table_id,user_id' }
+  );
+  if(error){ showToast('Fehler: ' + error.message); await loadMyOnlineLayoutPref(tableId); }
 }
 
 function deleteOnlineTablePrompt(tableId){
@@ -761,8 +768,20 @@ async function openOnlineTable(tableId){
   resetOnlineTableState();
   currentOnlineTableId = tableId;
   render();
-  await refreshOnlineTableAndSeat();
+  await Promise.all([refreshOnlineTableAndSeat(), loadMyOnlineLayoutPref(tableId)]);
   subscribeOnlineChannels();
+}
+
+// Lädt die eigene, persönliche Layout-Wahl für diesen Tisch (siehe online_layout_prefs) — getrennt
+// von tbl.layout_id, das nur noch als Fallback für Leute ohne eigene Wahl dient.
+async function loadMyOnlineLayoutPref(tableId){
+  const { data, error } = await sb.from('online_layout_prefs').select('layout_id')
+    .eq('table_id', tableId).eq('user_id', currentUser.id).maybeSingle();
+  if(error){ console.error('loadMyOnlineLayoutPref failed', error); onlineMyLayoutPref = undefined; return; }
+  // Keine Zeile = noch keine eigene Wahl getroffen (undefined, Fallback greift); Zeile vorhanden = die
+  // eigene Wahl, auch wenn layout_id darin null ist (bewusst "Standard-Tisch" statt Tisch-Fallback).
+  onlineMyLayoutPref = data ? (data.layout_id || null) : undefined;
+  render();
 }
 
 async function refreshOnlineTableAndSeat(){
@@ -1035,10 +1054,14 @@ function renderOnlineTableView(){
   // Eigenes Table-Designer-Layout statt generischer Oval-Positionen — identisch zum
   // Handerfassungsmodus (dort: getActiveLayout(sessionId)/getSeatSlotsForRender).
   // Online-Tische haben keine echte Session-id, darum per layoutOverride direkt das
-  // gewählte Layout (online_tables.layout_id) reinreichen, statt über sessionLayoutMap
-  // zu gehen. Nur Layouts mit genau so vielen Sitzen wie der Tisch sind sinnvoll.
+  // gewählte Layout reinreichen, statt über sessionLayoutMap zu gehen. Nur Layouts mit genau so
+  // vielen Sitzen wie der Tisch sind sinnvoll.
+  // Persönliche Wahl geht vor gemeinsamem Tisch-Default: onlineMyLayoutPref ist undefined, solange
+  // diese Person noch nie selbst gewählt hat (dann zählt tbl.layout_id als Fallback) — ist es null,
+  // war das eine bewusste "Standard-Tisch"-Wahl und übersteuert den Fallback ebenfalls.
   const matchingLayouts = layoutTemplates.filter(lt => lt.seatCount === seatCount);
-  const chosenLayout = tbl.layout_id ? matchingLayouts.find(lt => lt.id === tbl.layout_id) || null : null;
+  const effectiveLayoutId = onlineMyLayoutPref !== undefined ? onlineMyLayoutPref : tbl.layout_id;
+  const chosenLayout = effectiveLayoutId ? matchingLayouts.find(lt => lt.id === effectiveLayoutId) || null : null;
   const slots = getSeatSlotsForRender(seatCount, null, chosenLayout);
   // getSeatSlotsForRender(seatCount, null, chosenLayout) already passes chosenLayout explicitly as
   // layoutOverride, so a null chosenLayout correctly falls through to the generic seatPositions(n)
@@ -1079,7 +1102,7 @@ function renderOnlineTableView(){
       </div>
       ${!isFinished && matchingLayouts.length ? `
       <div style="position:absolute;bottom:16px;left:16px;z-index:8;">
-        <select onchange="setOnlineTableLayout('${tbl.id}', this.value||null)" style="font-size:12px;padding:5px 6px;border-radius:6px;" title="Tisch-Layout für diesen Online-Tisch">
+        <select onchange="setMyOnlineLayoutPref('${tbl.id}', this.value||null)" style="font-size:12px;padding:5px 6px;border-radius:6px;" title="Dein persönliches Tisch-Layout — gilt nur für deine eigene Ansicht">
           <option value="">Standard-Tisch</option>
           ${matchingLayouts.map(lt => `<option value="${lt.id}" ${chosenLayout && chosenLayout.id===lt.id ? 'selected':''}>${escapeHtml(lt.name)}</option>`).join('')}
         </select>
@@ -1957,6 +1980,11 @@ function ensureClubDefaults(){
   if(!currentClub.customCardDeck) currentClub.customCardDeck = { back:null, cards:{} };
   if(!currentClub.customCardDeck.cards) currentClub.customCardDeck.cards = {};
   if(!currentClub.cardDeckTemplates) currentClub.cardDeckTemplates = [];
+  // Table-Designer-Layouts: leben seit kurzem HIER (im club_data-JSON, wie Logos/Avatare/
+  // Kartendecks auch), statt wie zuvor global app-weit in der generischen app_storage-Tabelle —
+  // dort waren sie fälschlich über alle Clubs hinweg sichtbar (kein club_id-Bezug). Siehe
+  // enterClubUI() für die einmalige Übernahme bereits vorhandener alter Layouts.
+  if(!currentClub.tableLayouts) currentClub.tableLayouts = [];
   ensureClubLogos();
 }
 // Mehrere Club-Logos: currentClub.info.logos ist eine Liste { id, name, image }, und
@@ -2092,6 +2120,22 @@ async function submitJoinClub(){
 const ROLE_LABELS = { lesend:'👁 Nur Lesezugriff', erfassend:'✏️ Erfassend', app_gestaltend:'⚙️ App gestaltend' };
 function enterClubUI(){
   ensureClubDefaults();
+  // layoutTemplates ist ab sofort dieselbe Array-Referenz wie currentClub.tableLayouts — push/splice
+  // darauf ändert also direkt den Club-Datensatz mit, ganz ohne Umweg über eine eigene Save-Funktion.
+  layoutTemplates = currentClub.tableLayouts;
+  // Einmalige Migration (nur relevant für Clubs, die schon vor dieser Umstellung Layouts hatten):
+  // früher lagen Table-Designer-Layouts global (app-weit, über alle Clubs hinweg geteilt) in
+  // app_storage — siehe loadLegacyLayoutTemplates(). Läuft asynchron NACH deren Ladevorgang, damit
+  // der Rest von enterClubUI (Nav, Ansicht) nicht auf dieses Nebenthema warten muss; per .push() statt
+  // Neuzuweisung bleibt die oben gesetzte layoutTemplates-Referenz dabei gültig.
+  (async () => {
+    if(layoutTemplatesLoadedPromise) await layoutTemplatesLoadedPromise;
+    if(!currentClub.tableLayouts.length && legacyLayoutTemplates.length){
+      currentClub.tableLayouts.push(...JSON.parse(JSON.stringify(legacyLayoutTemplates)));
+      await saveClubData();
+      render();
+    }
+  })();
   document.getElementById('landing').style.display = 'none';
   document.getElementById('app').classList.add('active');
   document.getElementById('sb-club-name').textContent = currentClub.info.name;
@@ -2109,6 +2153,7 @@ function enterClubUI(){
 }
 function leaveClub(){
   currentCode = null; currentClub = null; currentSessionId = null; currentClubId = null; myRole = null;
+  layoutTemplates = []; // war Referenz auf currentClub.tableLayouts — beim Clubwechsel zurücksetzen
   unlockedSessions.clear();
   document.getElementById('app').classList.remove('active');
   document.getElementById('landing').style.display = 'flex';
@@ -6142,11 +6187,15 @@ async function confirmBackupImport(){
   if(!pendingBackupImport) return;
   const { club, payload } = pendingBackupImport;
   currentClub = club;
-  await saveClubData();
-  if(payload.layoutTemplates){
-    layoutTemplates = payload.layoutTemplates;
-    await saveLayoutTemplatesList();
+  ensureClubDefaults();
+  // Ältere Backups (vor der Umstellung auf currentClub.tableLayouts) tragen die Layouts noch separat
+  // im payload statt im club-Objekt selbst — hier übernehmen und layoutTemplates neu referenzieren,
+  // weil currentClub gerade komplett ersetzt wurde (alte Referenz zeigt sonst ins Leere).
+  if(payload.layoutTemplates && payload.layoutTemplates.length){
+    currentClub.tableLayouts = payload.layoutTemplates;
   }
+  layoutTemplates = currentClub.tableLayouts;
+  await saveClubData();
   if(payload.tableAssets){
     tableAssets = payload.tableAssets;
     await saveTableAssetsList();
@@ -10862,8 +10911,14 @@ async function saveTableAssetsList(){
 }
 
 /* ================= Layout-Editor (Hintergrund/Tisch/Sitze frei positionieren) ================= */
+// layoutTemplates ist ab jetzt KEINE eigene Datenquelle mehr, sondern wird beim Betreten eines Clubs
+// (enterClubUI) auf currentClub.tableLayouts gesetzt (gleiche Array-Referenz) — Lesen/Schreiben läuft
+// also transparent über saveClubData(), genau wie bei players/sessions/customAvatars etc.
+// legacyLayoutTemplates/loadLegacyLayoutTemplates() bleiben NUR noch für die einmalige Übernahme
+// alter, vor dieser Umstellung global (app-weit, ohne club_id) gespeicherter Layouts bestehen.
 let layoutTemplates = [];
-async function loadLayoutTemplates(){
+let legacyLayoutTemplates = [];
+async function loadLegacyLayoutTemplates(){
   // Jedes Layout wird unter einem EIGENEN Speicher-Schlüssel abgelegt (layout-template:<id>), nicht
   // mehr alle zusammen in einem einzigen Feld — sonst teilen sich z.B. 5 verschiedene Tisch-Themes
   // (Dracula, Weltraum, ...) EIN gemeinsames 5MB-Limit, was schnell zu Speicherfehlern führt, auch
@@ -10886,27 +10941,18 @@ async function loadLayoutTemplates(){
       } catch(e){ console.error('layout load failed for', id, e); return null; }
     }));
     const found = loaded.filter(Boolean);
-    if(found.length){ layoutTemplates = found; return; }
+    if(found.length){ legacyLayoutTemplates = found; return; }
     // Index verwies auf Layouts, aber KEINS liess sich tatsächlich laden -> nicht aufgeben, sondern
     // ebenfalls die Rückfall-Wege unten versuchen, statt mit einer leeren Liste abzubrechen.
   }
-  // Rückwärtskompatibel: altes gemeinsames Feld noch vorhanden (vor der Umstellung) -> einmalig
-  // übernehmen und direkt im neuen Format speichern, damit es beim nächsten Mal aufgeteilt ist.
-  // WICHTIG: hier bewusst NICHT saveLayoutTemplatesList() aufrufen — die wartet auf
-  // layoutTemplatesLoadedPromise, welches genau DIESER (noch laufende) Aufruf ist. Das wäre ein
-  // Deadlock (wartet auf sich selbst) und liess die Layouts nie ankommen.
-  // WICHTIG 2: Das Laden ins Gedächtnis (layoutTemplates) und das anschliessende Umspeichern sind
-  // jetzt in ZWEI separate try/catch aufgeteilt — schlägt nur das Umspeichern fehl, bleiben die
-  // gerade erst korrekt geladenen Daten trotzdem erhalten, statt durch einen Fehler beim Speichern
-  // wieder gelöscht zu werden (das war der eigentliche Grund, warum das Dropdown leer blieb).
+  // Rückwärtskompatibel: altes gemeinsames Feld noch vorhanden (vor der Umstellung auf das
+  // Pro-Layout-Format, lange vor der club_data-Umstellung) -> nur noch lesen, NICHT mehr
+  // zurückschreiben — das war früher nötig, ist aber seit der Umstellung auf currentClub.tableLayouts
+  // hinfällig (enterClubUI() übernimmt das Gefundene einmalig ins jeweilige club_data).
   try{
     const legacy = await window.storage.get('layout-templates', false);
     if(legacy && legacy.value){
-      layoutTemplates = JSON.parse(legacy.value);
-      if(layoutTemplates.length){
-        try{ await saveAllLayoutsDirect(); }
-        catch(e){ console.error('migration save to new format failed (Daten bleiben trotzdem im Speicher erhalten)', e); }
-      }
+      legacyLayoutTemplates = JSON.parse(legacy.value);
       return;
     }
   } catch(e){
@@ -10925,50 +10971,24 @@ async function loadLayoutTemplates(){
           return r && r.value ? JSON.parse(r.value) : null;
         } catch(e){ return null; }
       }));
-      layoutTemplates = loaded.filter(Boolean);
+      legacyLayoutTemplates = loaded.filter(Boolean);
     }
   } catch(e){
     console.error('list-basierter Rückfall-Weg ebenfalls fehlgeschlagen', e);
   }
 }
-async function saveAllLayoutsDirect(){
-  const ids = layoutTemplates.map(l => l.id);
-  await window.storage.set('layout-templates-index', JSON.stringify(ids), false);
-  let anyFailed = false;
-  await Promise.all(layoutTemplates.map(async l => {
-    try{ await window.storage.set('layout-template:' + l.id, JSON.stringify(l), false); }
-    catch(e){ anyFailed = true; console.error('layout save failed for', l.id, e); }
-  }));
-  return anyFailed;
-}
 let layoutTemplatesLoadedPromise = null;
-let layoutTemplatesSaveTimer = null;
+// layoutTemplates IST currentClub.tableLayouts (siehe enterClubUI) — Speichern heisst also einfach
+// saveClubData() aufrufen, die bereits ihr eigenes Debouncing/Fehlerhandling mitbringt. Name/Signatur
+// bleiben erhalten, weil Dutzende Stellen im Layout-Editor das bereits so aufrufen.
 async function saveLayoutTemplatesList(){
-  // Absicherung gegen Race Condition: falls ein Speichervorgang ausgelöst wird, bevor das initiale
-  // Laden beim Start abgeschlossen ist, würden wir sonst die gespeicherten Layouts mit einem noch
-  // leeren/veralteten Zwischenstand überschreiben — genau das führte zu "Layouts gehen verloren".
   if(layoutTemplatesLoadedPromise) await layoutTemplatesLoadedPromise;
-  // Gesammeltes Speichern — beim Ziehen eines Reglers im Layout-Editor löst JEDE kleinste Bewegung
-  // sonst eine eigene Netzwerk-Anfrage aus. Jetzt: nur die letzte Position (nach kurzer Pause) wird
-  // tatsächlich gespeichert.
-  if(layoutTemplatesSaveTimer) clearTimeout(layoutTemplatesSaveTimer);
-  layoutTemplatesSaveTimer = setTimeout(async () => {
-    layoutTemplatesSaveTimer = null;
-    try{
-      const anyFailed = await saveAllLayoutsDirect();
-      if(anyFailed){
-        showToast('⚠️ Mindestens ein Layout ist zu gross zum Speichern — bitte Bilder darin verkleinern.');
-      }
-    }
-    catch(e){
-      console.error('layout templates save failed', e);
-      showToast('⚠️ Speichern fehlgeschlagen — das Bild ist vermutlich zu gross. Versuch ein kleineres Bild.');
-    }
-  }, 600);
+  await saveClubData();
 }
-async function deleteLayoutTemplateStorage(id){
-  try{ await window.storage.delete('layout-template:' + id, false); } catch(e){}
-}
+// Obsolet seit der Umstellung auf currentClub.tableLayouts (ein Layout löschen heisst jetzt einfach
+// aus dem Array entfernen + saveClubData()) — als No-Op stehen gelassen, damit bestehende Aufrufstellen
+// (deleteLayoutTemplate) nicht extra angepasst werden mussten.
+async function deleteLayoutTemplateStorage(id){}
 function getStandardSeatCountForSession(sessionId){
   if(!sessionId) return 10;
   if(tableSettings.sessionStandardSeatCount && tableSettings.sessionStandardSeatCount[sessionId] != null) return tableSettings.sessionStandardSeatCount[sessionId];
@@ -12525,7 +12545,7 @@ loadThemePref();
 customTableThemesLoadedPromise = loadCustomTableThemes();
 customCardDesignsLoadedPromise = loadCustomCardDesigns();
 tableAssetsLoadedPromise = loadTableAssets();
-layoutTemplatesLoadedPromise = loadLayoutTemplates().then(() => { if(currentClub) render(); });
+layoutTemplatesLoadedPromise = loadLegacyLayoutTemplates();
 loadPanelOrders();
 </script>
 </body>
