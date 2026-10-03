@@ -609,6 +609,305 @@ let myRole = null;          // 'lesend' | 'erfassend' | 'app_gestaltend' im aktu
 function canWrite(){ return myRole === 'erfassend' || myRole === 'app_gestaltend'; }
 function isClubAdmin(){ return myRole === 'app_gestaltend'; }
 
+/* ================= Online Poker (Phase 0: Heads-up Cash Game) =================
+   Diese Tabellen (online_tables/online_seats/online_hand_state/online_hand_history)
+   leben NICHT im club_data-JSON-Blob wie der Rest der App, sondern sind eigene
+   Postgres-Tabellen mit eigenen RLS-Policies (siehe chipmate_online_poker_schema.sql
+   + chipmate_online_poker_phase0_lobby_rls.sql) — der Spielzustand ist zu
+   zeitkritisch und zu geheim (Hole Cards!) für das Load-everything-als-JSON-Modell.
+   Board/Pot/Zug kommen per Realtime-Broadcast von den Edge Functions; die eigenen
+   Hole Cards NUR über einen privaten Kanal pro Sitz bzw. get_my_hole_cards(). */
+let onlineTables = [];            // Liste der Tische dieses Clubs (aus online_tables + online_seats)
+let currentOnlineTableId = null;  // UUID des gerade geöffneten Tisches, oder null = Lobby-Liste
+let onlineMySeat = null;          // 0 oder 1 — Sitzplatz des eingeloggten Nutzers an diesem Tisch
+let onlineHandState = null;       // zuletzt bekannter öffentlicher Zustand (get_public_hand_state / Broadcast)
+let onlineMyHoleCards = null;     // eigene Hole Cards, z.B. ['A♠','K♦']
+let onlinePublicChannel = null;   // Realtime-Kanal-Handle: table:<id>:public
+let onlinePrivateChannel = null;  // Realtime-Kanal-Handle: table:<id>:seat:<n> (privat)
+let onlineBusy = false;           // verhindert Doppelklicks während ein Edge-Function-Call läuft
+let onlineRaiseAmount = '';       // Eingabefeld-Wert für Bet/Raise
+
+function cleanupOnlineChannels(){
+  if(onlinePublicChannel){ sb.removeChannel(onlinePublicChannel); onlinePublicChannel = null; }
+  if(onlinePrivateChannel){ sb.removeChannel(onlinePrivateChannel); onlinePrivateChannel = null; }
+}
+
+function resetOnlineTableState(){
+  cleanupOnlineChannels();
+  currentOnlineTableId = null;
+  onlineMySeat = null;
+  onlineHandState = null;
+  onlineMyHoleCards = null;
+  onlineRaiseAmount = '';
+}
+
+async function loadOnlineTables(){
+  const { data: tables, error } = await sb.from('online_tables')
+    .select('*').eq('club_id', currentClubId).order('created_at', {ascending:false});
+  if(error){ console.error(error); onlineTables = []; render(); return; }
+  const { data: seats } = await sb.from('online_seats').select('*').in('table_id', (tables||[]).map(t => t.id).concat(['00000000-0000-0000-0000-000000000000']));
+  onlineTables = (tables||[]).map(t => ({ ...t, seats: (seats||[]).filter(s => s.table_id === t.id).sort((a,b) => a.seat_no - b.seat_no) }));
+  render();
+}
+
+function renderOnlinePoker(){
+  if(currentOnlineTableId) return renderOnlineTableView();
+  return renderOnlineLobby();
+}
+
+function renderOnlineLobby(){
+  if(!onlineTables.length && !onlineLobbyLoaded){
+    onlineLobbyLoaded = true;
+    loadOnlineTables();
+  }
+  const rows = onlineTables.map(tb => {
+    const occ = tb.seats.filter(s => s.user_id).length;
+    const statusLabel = tb.status === 'waiting' ? 'Wartet auf Spieler' : tb.status === 'running' ? 'Läuft' : 'Beendet';
+    const mySeat = tb.seats.find(s => s.user_id === currentUser.id);
+    return `
+      <div class="session-row" onclick="openOnlineTable('${tb.id}')">
+        <div class="meta">
+          <div class="date">Blinds ${formatMoney(tb.small_blind)} / ${formatMoney(tb.big_blind)}</div>
+          <div class="sub">${occ}/2 Plätze besetzt · ${statusLabel}${mySeat!=null ? ' · Du sitzt auf Platz '+(mySeat.seat_no+1) : ''}</div>
+        </div>
+        <div class="right" style="display:flex;align-items:center;gap:8px;">
+          <span class="badge ${tb.status==='waiting' ? 'badge-open' : 'badge-closed'}">${statusLabel}</span>
+          ${isClubAdmin() ? `<button class="icon-btn danger" title="Tisch löschen" onclick="event.stopPropagation(); deleteOnlineTablePrompt('${tb.id}')">${ICON_ARCHIVE}</button>` : ''}
+        </div>
+      </div>`;
+  }).join('');
+  return `
+    <div class="view-head">
+      <div><h1>${t('nav_online')}</h1><p class="lede" style="margin-bottom:0">Heads-up Cash Game — live gegeneinander spielen, das Haus verteilt die Karten.</p></div>
+      ${canWrite() ? `<button class="btn btn-primary btn-sm" onclick="openNewOnlineTableModal()">+ Neuer Tisch</button>` : ''}
+    </div>
+    ${onlineTables.length ? rows : `<div class="panel"><div class="empty-state"><strong>Noch keine Online-Tische</strong>${canWrite() ? 'Leg oben einen neuen Tisch an.' : 'Wartet, bis jemand mit Schreibrechten einen Tisch anlegt.'}</div></div>`}
+  `;
+}
+let onlineLobbyLoaded = false;
+
+function openNewOnlineTableModal(){
+  document.getElementById('modal-root').innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this) closeModal()">
+      <div class="modal">
+        <h2>Neuer Online-Tisch</h2>
+        <p class="hint">Heads-up (2 Spieler), fixe Blinds. Turniere und mehr Spieler folgen später.</p>
+        <div class="field-row">
+          <div class="field"><label>Small Blind</label><input id="ot-sb" type="number" min="0" step="0.5" value="0.5"></div>
+          <div class="field"><label>Big Blind</label><input id="ot-bb" type="number" min="0" step="0.5" value="1"></div>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+          <button class="btn btn-ghost btn-sm" onclick="closeModal()">${t('btn_cancel')}</button>
+          <button class="btn btn-primary btn-sm" onclick="createOnlineTable()">${t('btn_create')}</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function createOnlineTable(){
+  const sb_ = parseFloat(document.getElementById('ot-sb').value);
+  const bb_ = parseFloat(document.getElementById('ot-bb').value);
+  if(!(sb_ > 0) || !(bb_ > sb_)){ showToast('Big Blind muss grösser als Small Blind sein.'); return; }
+  const { error } = await sb.from('online_tables').insert({ club_id: currentClubId, small_blind: sb_, big_blind: bb_ });
+  if(error){ showToast('Fehler: ' + error.message); return; }
+  closeModal();
+  onlineLobbyLoaded = false;
+  await loadOnlineTables();
+}
+
+function deleteOnlineTablePrompt(tableId){
+  showConfirmModal('Diesen Online-Tisch wirklich löschen? Das kann nicht rückgängig gemacht werden.', `reallyDeleteOnlineTable('${tableId}')`, 'Löschen');
+}
+async function reallyDeleteOnlineTable(tableId){
+  const { error } = await sb.from('online_tables').delete().eq('id', tableId);
+  if(error){ showToast('Fehler: ' + error.message); return; }
+  await loadOnlineTables();
+}
+
+async function openOnlineTable(tableId){
+  resetOnlineTableState();
+  currentOnlineTableId = tableId;
+  render();
+  await refreshOnlineTableAndSeat();
+  subscribeOnlineChannels();
+}
+
+async function refreshOnlineTableAndSeat(){
+  const { data: seats } = await sb.from('online_seats').select('*').eq('table_id', currentOnlineTableId);
+  const mine = (seats||[]).find(s => s.user_id === currentUser.id);
+  onlineMySeat = mine ? mine.seat_no : null;
+  const t = onlineTables.find(x => x.id === currentOnlineTableId);
+  if(t) t.seats = (seats||[]).sort((a,b) => a.seat_no - b.seat_no);
+  if(onlineMySeat != null){
+    const { data: pub } = await sb.rpc('get_public_hand_state', { p_table_id: currentOnlineTableId });
+    onlineHandState = pub || null;
+    const { data: cards } = await sb.rpc('get_my_hole_cards', { p_table_id: currentOnlineTableId });
+    onlineMyHoleCards = cards || null;
+  }
+  render();
+}
+
+function subscribeOnlineChannels(){
+  cleanupOnlineChannels();
+  const tableId = currentOnlineTableId;
+  onlinePublicChannel = sb.channel(`table:${tableId}:public`)
+    .on('broadcast', { event: 'state' }, (msg) => {
+      if(currentOnlineTableId !== tableId) return;
+      // Edge Functions broadcasten aufgedeckte Karten als "revealed_hole_cards";
+      // get_public_hand_state() (initialer Ladevorgang) nennt dasselbe Feld
+      // "hole_cards" — hier auf einen gemeinsamen Namen normalisieren, damit
+      // renderOnlineTableView() nicht zwischen den beiden Quellen unterscheiden muss.
+      onlineHandState = { ...msg.payload, hole_cards: msg.payload.revealed_hole_cards || null };
+      if(msg.payload.revealed_hole_cards) onlineMyHoleCards = onlineMySeat != null ? msg.payload.revealed_hole_cards[String(onlineMySeat)] : onlineMyHoleCards;
+      render();
+    })
+    .subscribe();
+  if(onlineMySeat != null){
+    onlinePrivateChannel = sb.channel(`table:${tableId}:seat:${onlineMySeat}`, { config: { private: true } })
+      .on('broadcast', { event: 'hole_cards' }, (msg) => {
+        if(currentOnlineTableId !== tableId) return;
+        onlineMyHoleCards = msg.payload.cards;
+        render();
+      })
+      .subscribe();
+  }
+}
+
+async function takeOnlineSeat(seatNo){
+  const buyin = prompt('Buy-in für diesen Tisch (Startstack)?', '100');
+  if(buyin == null) return;
+  const amount = parseFloat(buyin);
+  if(!(amount > 0)){ showToast('Ungültiger Betrag.'); return; }
+  const { error } = await sb.from('online_seats').insert({ table_id: currentOnlineTableId, seat_no: seatNo, user_id: currentUser.id, user_email: currentUser.email, stack: amount });
+  if(error){ showToast('Platz konnte nicht belegt werden: ' + error.message); return; }
+  await refreshOnlineTableAndSeat();
+  subscribeOnlineChannels();
+}
+
+function leaveOnlineSeat(){
+  showConfirmModal('Platz wirklich verlassen?', 'reallyLeaveOnlineSeat()', 'Verlassen');
+}
+async function reallyLeaveOnlineSeat(){
+  await sb.from('online_seats').delete().eq('table_id', currentOnlineTableId).eq('user_id', currentUser.id);
+  resetOnlineTableState();
+  onlineLobbyLoaded = false;
+  setView('online');
+}
+
+function backToOnlineLobby(){
+  resetOnlineTableState();
+  onlineLobbyLoaded = false;
+  setView('online');
+}
+
+async function callStartHand(){
+  if(onlineBusy) return;
+  onlineBusy = true;
+  try{
+    const { data, error } = await sb.functions.invoke('start_hand', { body: { table_id: currentOnlineTableId } });
+    if(error || (data && data.error)){ showToast('Fehler: ' + (data?.error || error.message)); return; }
+    await refreshOnlineTableAndSeat();
+  } finally { onlineBusy = false; }
+}
+
+async function callSubmitAction(action, amount){
+  if(onlineBusy) return;
+  onlineBusy = true;
+  try{
+    const body = { table_id: currentOnlineTableId, action };
+    if(amount != null) body.amount = amount;
+    const { data, error } = await sb.functions.invoke('submit_action', { body });
+    if(error || (data && data.error)){ showToast('Fehler: ' + (data?.error || error.message)); return; }
+  } finally { onlineBusy = false; }
+}
+
+function onlineSeatLabel(seatNo){
+  const tbl = onlineTables.find(x => x.id === currentOnlineTableId);
+  const seat = tbl ? tbl.seats.find(s => s.seat_no === seatNo) : null;
+  if(!seat || !seat.user_id) return 'Frei';
+  if(seat.user_id === currentUser.id) return 'Du';
+  return escapeHtml(seat.user_email || ('Spieler ' + (seatNo+1)));
+}
+
+function renderOnlineTableView(){
+  const tbl = onlineTables.find(x => x.id === currentOnlineTableId);
+  if(!tbl) return `<div class="panel"><div class="empty-state">Tisch wird geladen…</div></div>`;
+  if(onlineMySeat == null) return renderOnlineSeatPicker(tbl);
+  const hs = onlineHandState;
+  const phase = hs ? hs.phase : 'waiting';
+  const myTurn = hs && hs.current_seat === onlineMySeat && ['preflop','flop','turn','river'].includes(phase);
+  const oppSeat = onlineMySeat === 0 ? 1 : 0;
+  const myBet = hs && hs.bets ? (hs.bets[String(onlineMySeat)] || 0) : 0;
+  const oppBet = hs && hs.bets ? (hs.bets[String(oppSeat)] || 0) : 0;
+  const toCall = oppBet - myBet;
+  const mySeatRow = tbl.seats.find(s => s.seat_no === onlineMySeat);
+  const oppSeatRow = tbl.seats.find(s => s.seat_no === oppSeat);
+  const canStart = (!hs || phase === 'done' || phase === 'waiting') && mySeatRow && oppSeatRow && mySeatRow.user_id && oppSeatRow.user_id;
+  const revealOpp = hs && hs.hole_cards && (phase === 'showdown' || phase === 'done');
+
+  return `
+    <div class="view-head">
+      <div><h1>Online-Tisch</h1><p class="lede" style="margin-bottom:0">Blinds ${formatMoney(tbl.small_blind)} / ${formatMoney(tbl.big_blind)} · Hand #${hs ? hs.hand_no||0 : 0}</p></div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-ghost btn-sm" onclick="backToOnlineLobby()">← Lobby</button>
+        <button class="btn btn-ghost btn-sm" onclick="leaveOnlineSeat()">Platz verlassen</button>
+      </div>
+    </div>
+    <div class="panel" style="padding:24px;display:flex;flex-direction:column;gap:16px;align-items:center;">
+      <div style="text-align:center;">
+        <div style="font-weight:700;opacity:.7;">${onlineSeatLabel(oppSeat)}${oppSeatRow ? ' · Stack '+formatMoney(oppSeatRow.stack) : ''}</div>
+        <div style="font-size:1.4em;letter-spacing:2px;margin-top:4px;">${revealOpp ? (hs.hole_cards[String(oppSeat)]||[]).join(' ') : (oppSeatRow && oppSeatRow.user_id ? '🂠 🂠' : '—')}</div>
+        ${hs && hs.folded && hs.folded[String(oppSeat)] ? '<div style="color:#999;">Fold</div>' : ''}
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;">
+        <div style="font-family:'Fraunces',serif;font-weight:800;font-size:1.3em;">Pot: ${formatMoney(hs ? hs.pot : 0)}</div>
+      </div>
+      <div style="font-size:1.6em;letter-spacing:4px;min-height:1.4em;">${hs && hs.board && hs.board.length ? hs.board.join(' ') : (phase==='waiting'||!hs ? '' : '…')}</div>
+      <div style="text-align:center;">
+        <div style="font-weight:700;">${onlineSeatLabel(onlineMySeat)}${mySeatRow ? ' · Stack '+formatMoney(mySeatRow.stack) : ''}</div>
+        <div style="font-size:1.4em;letter-spacing:2px;margin-top:4px;">${onlineMyHoleCards ? onlineMyHoleCards.join(' ') : '🂠 🂠'}</div>
+        ${hs && hs.folded && hs.folded[String(onlineMySeat)] ? '<div style="color:#999;">Fold</div>' : ''}
+      </div>
+    </div>
+    ${canStart ? `<div class="panel" style="text-align:center;"><button class="btn btn-primary" onclick="callStartHand()">${hs && hs.hand_no ? 'Nächste Hand starten' : 'Hand starten'}</button></div>` : ''}
+    ${hs && hs.hand_over !== undefined && hs.hand_over && hs.winner_seat !== undefined ? `<div class="panel" style="text-align:center;"><strong>${hs.winner_seat === null ? 'Split Pot' : (hs.winner_seat === onlineMySeat ? 'Du gewinnst die Hand!' : 'Gegner gewinnt die Hand.')}</strong></div>` : ''}
+    ${myTurn ? renderOnlineActionBar(toCall, mySeatRow ? mySeatRow.stack : 0, hs) : (hs && ['preflop','flop','turn','river'].includes(phase) ? `<div class="panel" style="text-align:center;color:#999;">Warte auf Gegner…</div>` : '')}
+  `;
+}
+
+function renderOnlineSeatPicker(tbl){
+  return `
+    <div class="view-head">
+      <div><h1>Online-Tisch</h1><p class="lede" style="margin-bottom:0">Blinds ${formatMoney(tbl.small_blind)} / ${formatMoney(tbl.big_blind)}</p></div>
+      <button class="btn btn-ghost btn-sm" onclick="backToOnlineLobby()">← Lobby</button>
+    </div>
+    <div style="display:flex;gap:16px;justify-content:center;">
+      ${[0,1].map(seatNo => {
+        const seat = tbl.seats.find(s => s.seat_no === seatNo);
+        const taken = seat && seat.user_id;
+        return `<div class="panel" style="min-width:160px;text-align:center;padding:20px;">
+          <div style="font-weight:700;margin-bottom:8px;">Platz ${seatNo+1}</div>
+          ${taken ? `<div>${escapeHtml(seat.user_email || 'besetzt')}</div><div style="opacity:.7;">Stack ${formatMoney(seat.stack)}</div>`
+                  : `<button class="btn btn-primary btn-sm" onclick="takeOnlineSeat(${seatNo})">Hinsetzen</button>`}
+        </div>`;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderOnlineActionBar(toCall, myStack, hs){
+  const minRaiseTotal = (hs.bets ? (hs.bets[String(hs.current_seat===0?1:0)]||0) : 0) + (hs.last_raise_size || 0);
+  return `
+    <div class="panel action-pane" style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;padding:16px;">
+      <button class="btn btn-ghost" onclick="callSubmitAction('fold')">Fold</button>
+      ${toCall <= 0 ? `<button class="btn btn-secondary" onclick="callSubmitAction('check')">Check</button>`
+                     : `<button class="btn btn-secondary" onclick="callSubmitAction('call')">Call ${formatMoney(toCall)}</button>`}
+      <input id="online-raise-input" type="number" min="${minRaiseTotal}" step="${hs.last_raise_size||1}" placeholder="Betrag (gesamt)" value="${onlineRaiseAmount}" style="width:120px;padding:11px 12px;border-radius:8px;border:1px solid var(--paper-line);background:var(--paper);color:var(--ink);" oninput="onlineRaiseAmount=this.value">
+      <button class="btn btn-primary" onclick="callSubmitAction(${toCall>0?`'raise'`:`'bet'`}, parseFloat(document.getElementById('online-raise-input').value))">${toCall>0?'Raise':'Bet'}</button>
+    </div>
+  `;
+}
+
 async function sendLoginCode(){
   const email = document.getElementById('auth-email').value.trim();
   const errBox = document.getElementById('auth-email-error');
@@ -731,7 +1030,7 @@ const translations = {
     modal_join_title:'Club beitreten', modal_join_hint:'Gib den 5-stelligen Code eurer Runde ein.',
     label_club_code:'Club-Code', placeholder_club_code:'z.B. K7QRM',
     err_need_code:'Bitte einen Code eingeben.', err_club_not_found:'Kein Club mit diesem Code gefunden.', btn_join:'Beitreten',
-    nav_dashboard:'Dashboard', nav_sessions:'Sessions', nav_players:'Players', nav_stats:'Stats', nav_hands:'Hands', nav_club:'Club',
+    nav_dashboard:'Dashboard', nav_sessions:'Sessions', nav_players:'Players', nav_stats:'Stats', nav_hands:'Hands', nav_online:'Online Poker', nav_club:'Club',
     btn_switch_club:'Club wechseln',
     dash_title:'Dashboard', dash_lede:'Überblick über {club}.',
     stat_sessions_played:'Gespielte Sessions', stat_biggest_pot:'Grösster registrierter Pot', stat_avg_players:'Ø Spieler pro Session',
@@ -1526,6 +1825,7 @@ document.getElementById('nav').addEventListener('click', (e) => {
   setView(btn.dataset.view);
 });
 function setView(view){
+  if(currentView === 'online' && view !== 'online') cleanupOnlineChannels();
   currentView = view;
   document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   render();
@@ -1535,11 +1835,12 @@ const NAV_ITEMS_DEF = {
   sessions: { glyph:'♣', labelKey:'nav_sessions' },
   players: { glyph:'♥', labelKey:'nav_players' },
   hands: { glyph:'🂠', labelKey:'nav_hands' },
+  online: { glyph:'♦', labelKey:'nav_online' },
   club: { glyph:'📣', labelKey:'nav_club' },
   settings: { glyph:'⚙', labelKey:'nav_settings' },
   support: { glyph:'🆘', labelKey:'nav_support' }
 };
-const NAV_DEFAULT_ORDER = ['dashboard','sessions','players','hands','club','settings','support'];
+const NAV_DEFAULT_ORDER = ['dashboard','sessions','players','hands','online','club','settings','support'];
 let navArrangeMode = false;
 function getNavOrder(){
   const saved = panelOrders['__nav__'];
@@ -2227,6 +2528,7 @@ function render(){
   else if(currentView === 'players') el.innerHTML = renderPlayers();
   else if(currentView === 'settings') el.innerHTML = renderSettings();
   else if(currentView === 'hands') el.innerHTML = renderHands();
+  else if(currentView === 'online') el.innerHTML = renderOnlinePoker();
   else if(currentView === 'club') el.innerHTML = renderClubTab();
   else if(currentView === 'support') el.innerHTML = renderSupport();
   else el.innerHTML = renderPlaceholder(currentView);
