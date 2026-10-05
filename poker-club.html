@@ -12561,7 +12561,7 @@ function handleCardSheetUpload(input){
         rect: { left:0, top:0, right:100, bottom:100 },
         rows: 4,
         cols: 13,
-        inset: 0,
+        inset: 0, insL:0, insT:0, insR:0, insB:0, offX:0, offY:0, zoom:1,
         dragging: null,
         step: 1,
         cellImages: null,
@@ -12599,9 +12599,25 @@ function openSheetImportOverlay(){
         <span class="lede" style="margin:0;">= <span id="sheet-cell-count">${s.rows*s.cols}</span> Zellen</span>
         <button type="button" class="btn btn-secondary btn-sm" onclick="snapSheetRectToImageEdges()">📐 An Bildrand ausrichten</button>
       </div>
-      <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:12px;">
-        <label style="display:flex;align-items:center;gap:6px;">Rand einwärts <input type="range" min="0" max="25" step="0.5" id="sheet-inset" value="${s.inset||0}" style="width:160px;" oninput="updateSheetInset()"> <span id="sheet-inset-value">${s.inset||0}</span>%</label>
-        <span class="lede" style="margin:0;">Falls die Karten im Bild selbst noch einen dunklen Rand/Abstand zueinander haben: hier erhöhen, bis die <span style="color:#ff5050;font-weight:700;">rote gestrichelte</span> Linie unten exakt am Kartenmotiv liegt (ohne Rand) — nur die <span style="color:#ffcc33;font-weight:700;">gelbe</span> Linie zeigt noch die reine Rasteraufteilung.</span>
+      <div style="margin-bottom:12px;padding:8px 10px;background:var(--paper);border:1px solid var(--paper-line);border-radius:8px;">
+        <div class="lede" style="margin:0 0 6px;font-weight:700;"><span style="color:#ff5050;">Rote Linie</span> = tatsächlicher Zuschnitt jeder Karte (% der Zelle)</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;">
+          ${[['L','Links'],['T','Oben'],['R','Rechts'],['B','Unten']].map(([k,l])=>`<label style="display:flex;align-items:center;gap:6px;">${l} <input type="range" min="0" max="45" step="0.25" id="sheet-ins${k}" value="${s['ins'+k]||0}" style="width:110px;" oninput="updateSheetInset()"> <input type="number" min="0" max="45" step="0.25" id="sheet-ins${k}-n" value="${s['ins'+k]||0}" style="width:60px;" oninput="updateSheetInset('${k}')">%</label>`).join('')}
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;margin-top:6px;">
+          <label style="display:flex;align-items:center;gap:6px;">Ausschnitt verschieben ↔ <input type="range" min="-30" max="30" step="0.25" id="sheet-offX" value="${s.offX||0}" style="width:130px;" oninput="updateSheetInset()"> <span id="sheet-offX-v">${s.offX||0}</span>%</label>
+          <label style="display:flex;align-items:center;gap:6px;">↕ <input type="range" min="-30" max="30" step="0.25" id="sheet-offY" value="${s.offY||0}" style="width:130px;" oninput="updateSheetInset()"> <span id="sheet-offY-v">${s.offY||0}</span>%</label>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="resetSheetInset()">Zurücksetzen</button>
+        </div>
+        <div class="lede" style="margin:6px 0 0;font-size:12px;">Seiten einzeln abschneiden, um nur einen Teil der Karte zu nehmen. «Verschieben» rückt den Ausschnitt ohne seine Grösse zu ändern — er bleibt immer im Bild, es entsteht kein schwarzer Rand. Die <span style="color:#ffcc33;font-weight:700;">gelbe</span> Linie zeigt nur die Rasteraufteilung.</div>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:8px;">
+        <span class="lede" style="margin:0;font-weight:700;">🔍 Zoom:</span>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="setSheetZoom(-0.5)">−</button>
+        <input type="range" min="1" max="8" step="0.25" id="sheet-zoom" value="${s.zoom||1}" style="width:160px;" oninput="setSheetZoom(null,this.value)">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="setSheetZoom(0.5)">+</button>
+        <span id="sheet-zoom-v" class="lede" style="margin:0;">${s.zoom||1}×</span>
+        <span class="lede" style="margin:0;font-size:12px;">Bei Zoom das Bild im Rahmen scrollen, dann die gelben Griffe präzise setzen.</span>
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:12px;padding:8px 10px;background:var(--paper);border:1px solid var(--paper-line);border-radius:8px;">
         <span class="lede" style="margin:0;font-weight:700;">Gelbes Raster exakt (%):</span>
@@ -12611,21 +12627,23 @@ function openSheetImportOverlay(){
         <label style="display:flex;align-items:center;gap:4px;">Unten <input type="number" min="0" max="100" step="0.1" id="sheet-rect-bottom" value="${s.rect.bottom.toFixed(1)}" style="width:72px;" oninput="updateSheetRectFromInputs()"></label>
         <span class="lede" style="margin:0;">Statt an den gelben Griffen zu ziehen: Werte direkt eintippen oder mit den kleinen Pfeilen am Feld in 0.1%-Schritten nachjustieren (gedrückt halten für schnelleres Wiederholen).</span>
       </div>
-      <div id="sheet-import-container" style="position:relative;width:${dispW}px;height:${dispH}px;margin:0 auto;background:#111;touch-action:none;user-select:none;border-radius:6px;overflow:hidden;">
+      <div id="sheet-import-scroll" style="width:${dispW}px;max-width:100%;max-height:62vh;overflow:auto;margin:0 auto;border-radius:6px;background:#111;">
+      <div id="sheet-import-container" style="position:relative;width:${dispW*(s.zoom||1)}px;height:${dispH*(s.zoom||1)}px;background:#111;touch-action:none;user-select:none;">
         <img src="${s.dataUrl}" style="position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;" draggable="false">
         <div id="sheet-rect-outline" style="position:absolute;border:2px solid #ffcc33;pointer-events:none;box-sizing:border-box;"></div>
         <div id="sheet-grid-lines"></div>
         <div id="sheet-handle-tl" class="sheet-handle" style="position:absolute;width:18px;height:18px;margin-left:-9px;margin-top:-9px;border-radius:50%;background:#ffcc33;border:2px solid #1a1a1a;cursor:grab;"></div>
         <div id="sheet-handle-br" class="sheet-handle" style="position:absolute;width:18px;height:18px;margin-left:-9px;margin-top:-9px;border-radius:50%;background:#ffcc33;border:2px solid #1a1a1a;cursor:grab;"></div>
       </div>
+      </div>
       <div style="margin-top:14px;">
         <p class="lede" style="margin:0 0 6px;font-size:12px;">Live-Vorschau — so würden die vier Eck-Karten und die Mitte zugeschnitten:</p>
         <div style="display:flex;gap:10px;flex-wrap:wrap;">
-          <div style="text-align:center;"><div id="sheet-preview-tl" class="sheet-preview-thumb" style="width:70px;aspect-ratio:5/7;border-radius:6px;background:#333;background-size:cover;background-position:center;border:1px solid var(--paper-line);"></div><div class="lede" style="margin:2px 0 0;font-size:10px;">oben links</div></div>
-          <div style="text-align:center;"><div id="sheet-preview-tr" class="sheet-preview-thumb" style="width:70px;aspect-ratio:5/7;border-radius:6px;background:#333;background-size:cover;background-position:center;border:1px solid var(--paper-line);"></div><div class="lede" style="margin:2px 0 0;font-size:10px;">oben rechts</div></div>
-          <div style="text-align:center;"><div id="sheet-preview-center" class="sheet-preview-thumb" style="width:70px;aspect-ratio:5/7;border-radius:6px;background:#333;background-size:cover;background-position:center;border:1px solid var(--paper-line);"></div><div class="lede" style="margin:2px 0 0;font-size:10px;">Mitte</div></div>
-          <div style="text-align:center;"><div id="sheet-preview-bl" class="sheet-preview-thumb" style="width:70px;aspect-ratio:5/7;border-radius:6px;background:#333;background-size:cover;background-position:center;border:1px solid var(--paper-line);"></div><div class="lede" style="margin:2px 0 0;font-size:10px;">unten links</div></div>
-          <div style="text-align:center;"><div id="sheet-preview-br" class="sheet-preview-thumb" style="width:70px;aspect-ratio:5/7;border-radius:6px;background:#333;background-size:cover;background-position:center;border:1px solid var(--paper-line);"></div><div class="lede" style="margin:2px 0 0;font-size:10px;">unten rechts</div></div>
+          <div style="text-align:center;"><div id="sheet-preview-tl" class="sheet-preview-thumb" style="width:100px;aspect-ratio:5/7;border-radius:6px;background:#333;background-size:cover;background-position:center;border:1px solid var(--paper-line);"></div><div class="lede" style="margin:2px 0 0;font-size:10px;">oben links</div></div>
+          <div style="text-align:center;"><div id="sheet-preview-tr" class="sheet-preview-thumb" style="width:100px;aspect-ratio:5/7;border-radius:6px;background:#333;background-size:cover;background-position:center;border:1px solid var(--paper-line);"></div><div class="lede" style="margin:2px 0 0;font-size:10px;">oben rechts</div></div>
+          <div style="text-align:center;"><div id="sheet-preview-center" class="sheet-preview-thumb" style="width:100px;aspect-ratio:5/7;border-radius:6px;background:#333;background-size:cover;background-position:center;border:1px solid var(--paper-line);"></div><div class="lede" style="margin:2px 0 0;font-size:10px;">Mitte</div></div>
+          <div style="text-align:center;"><div id="sheet-preview-bl" class="sheet-preview-thumb" style="width:100px;aspect-ratio:5/7;border-radius:6px;background:#333;background-size:cover;background-position:center;border:1px solid var(--paper-line);"></div><div class="lede" style="margin:2px 0 0;font-size:10px;">unten links</div></div>
+          <div style="text-align:center;"><div id="sheet-preview-br" class="sheet-preview-thumb" style="width:100px;aspect-ratio:5/7;border-radius:6px;background:#333;background-size:cover;background-position:center;border:1px solid var(--paper-line);"></div><div class="lede" style="margin:2px 0 0;font-size:10px;">unten rechts</div></div>
         </div>
       </div>
       <div class="modal-actions">
@@ -12710,14 +12728,50 @@ function updateSheetRectFromInputs(){
   s.rect = { left, top, right, bottom };
   renderSheetOverlayVisuals();
 }
-function updateSheetInset(){
+function updateSheetInset(fromNum){
   const s = sheetImportState;
   if(!s) return;
-  const el = document.getElementById('sheet-inset');
-  s.inset = Math.max(0, Math.min(25, Number(el.value) || 0));
-  const valEl = document.getElementById('sheet-inset-value');
-  if(valEl) valEl.textContent = s.inset;
+  const num = v => Math.max(0, Math.min(45, Number(v) || 0));
+  ['L','T','R','B'].forEach(k => {
+    const sl = document.getElementById('sheet-ins'+k), nm = document.getElementById('sheet-ins'+k+'-n');
+    const src = (fromNum === k) ? nm : sl;
+    s['ins'+k] = num(src.value);
+    if(sl && sl !== src) sl.value = s['ins'+k];
+    if(nm && nm !== src && nm !== document.activeElement) nm.value = s['ins'+k];
+  });
+  // Gegenüberliegende Seiten dürfen sich nie überkreuzen (mind. 10 % bleiben)
+  if(s.insL + s.insR > 90){ s.insR = 90 - s.insL; }
+  if(s.insT + s.insB > 90){ s.insB = 90 - s.insT; }
+  s.offX = Number(document.getElementById('sheet-offX').value) || 0;
+  s.offY = Number(document.getElementById('sheet-offY').value) || 0;
+  const ox = document.getElementById('sheet-offX-v'), oy = document.getElementById('sheet-offY-v');
+  if(ox) ox.textContent = s.offX; if(oy) oy.textContent = s.offY;
   renderSheetOverlayVisuals();
+}
+function resetSheetInset(){
+  const s = sheetImportState; if(!s) return;
+  s.insL = s.insT = s.insR = s.insB = 0; s.offX = s.offY = 0;
+  ['L','T','R','B'].forEach(k => { const a=document.getElementById('sheet-ins'+k), b=document.getElementById('sheet-ins'+k+'-n'); if(a)a.value=0; if(b)b.value=0; });
+  document.getElementById('sheet-offX').value = 0; document.getElementById('sheet-offY').value = 0;
+  updateSheetInset();
+}
+function setSheetZoom(delta, abs){
+  const s = sheetImportState; if(!s) return;
+  let z = abs != null ? Number(abs) : (s.zoom||1) + delta;
+  z = Math.max(1, Math.min(8, z || 1));
+  const scroll = document.getElementById('sheet-import-scroll');
+  const cont = document.getElementById('sheet-import-container');
+  if(!scroll || !cont) return;
+  // Bildmitte des sichtbaren Ausschnitts beibehalten
+  const fx = (scroll.scrollLeft + scroll.clientWidth/2) / cont.clientWidth;
+  const fy = (scroll.scrollTop + scroll.clientHeight/2) / cont.clientHeight;
+  const { dispW, dispH } = sheetImportDisplaySize();
+  s.zoom = z;
+  cont.style.width = (dispW*z)+'px'; cont.style.height = (dispH*z)+'px';
+  scroll.scrollLeft = fx*cont.clientWidth - scroll.clientWidth/2;
+  scroll.scrollTop = fy*cont.clientHeight - scroll.clientHeight/2;
+  const sl = document.getElementById('sheet-zoom'); if(sl) sl.value = z;
+  const v = document.getElementById('sheet-zoom-v'); if(v) v.textContent = z+'×';
 }
 function snapSheetRectToImageEdges(){
   // Abkürzung für bereits saubere, randlose Raster (z.B. direkt von der KI exportierte Sprite-Sheets):
@@ -12772,15 +12826,14 @@ function renderSheetOverlayVisuals(){
     // Zellgrenze/dem Bildrand liegt). So sieht man live, ob der schwarze Rand/Abstand im Quellbild
     // schon ausserhalb dieser roten Linie liegt — erst dann ist der Zuschnitt wirklich randgenau,
     // ohne dass man das Gesamtrechteck (gelbe Griffe) selbst verschieben müsste.
-    const insetPct = s.inset || 0;
-    if(insetPct > 0){
-      const cellW = w / s.cols, cellH = h / s.rows;
-      const insetX = cellW * insetPct/100, insetY = cellH * insetPct/100;
+    const cellW = w / s.cols, cellH = h / s.rows;
+    const hasCrop = (s.insL||s.insT||s.insR||s.insB||s.offX||s.offY);
+    if(hasCrop){
       for(let rI=0; rI<s.rows; rI++){
         for(let c=0; c<s.cols; c++){
-          const cellLeft = s.rect.left + c*cellW, cellTop = s.rect.top + rI*cellH;
-          const x = cellLeft + insetX, y = cellTop + insetY;
-          const ww = cellW - 2*insetX, hh = cellH - 2*insetY;
+          const g = sheetCellSrcRect(s, rI, c);
+          const x = g.sx / s.naturalW * 100, y = g.sy / s.naturalH * 100;
+          const ww = g.sw / s.naturalW * 100, hh = g.sh / s.naturalH * 100;
           html += `<div style="position:absolute;left:${x}%;top:${y}%;width:${ww}%;height:${hh}%;border:1px dashed #ff5050;box-sizing:border-box;pointer-events:none;"></div>`;
         }
       }
@@ -12800,14 +12853,15 @@ function sheetCellSrcRect(s, rowI, colI){
   const rectPxW = (s.rect.right - s.rect.left)/100 * s.naturalW;
   const rectPxH = (s.rect.bottom - s.rect.top)/100 * s.naturalH;
   const cellW = rectPxW / s.cols, cellH = rectPxH / s.rows;
-  const insetPct = s.inset || 0;
-  const insetX = cellW * insetPct/100, insetY = cellH * insetPct/100;
-  return {
-    sx: rectPxLeft + colI*cellW + insetX,
-    sy: rectPxTop + rowI*cellH + insetY,
-    sw: cellW - 2*insetX,
-    sh: cellH - 2*insetY
-  };
+  const iL = s.insL||0, iT = s.insT||0, iR = s.insR||0, iB = s.insB||0;
+  let sw = cellW * (100 - iL - iR)/100, sh = cellH * (100 - iT - iB)/100;
+  let sx = rectPxLeft + colI*cellW + cellW*(iL + (s.offX||0))/100;
+  let sy = rectPxTop + rowI*cellH + cellH*(iT + (s.offY||0))/100;
+  // Ausschnitt bleibt immer im Bild: lieber verschieben als über den Rand hinaus lesen (kein schwarzer Rand)
+  sw = Math.min(sw, s.naturalW); sh = Math.min(sh, s.naturalH);
+  sx = Math.max(0, Math.min(s.naturalW - sw, sx));
+  sy = Math.max(0, Math.min(s.naturalH - sh, sy));
+  return { sx, sy, sw, sh };
 }
 function updateSheetPreviewThumbs(){
   // Schneidet sofort 5 Beispielzellen (vier Ecken + Mitte) mit dem aktuellen Rechteck/Raster zu und
