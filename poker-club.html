@@ -987,12 +987,23 @@ async function addOnlineBuyin(){
   showToast('Nachkauf gebucht.');
 }
 
+// Bei Status != 2xx liefert supabase-js nur "non-2xx status code" — der eigentliche Fehlertext steckt im Response-Body
+async function edgeErrorText(data, error){
+  if(data && data.error) return String(data.error);
+  try{
+    if(error && error.context && typeof error.context.json === 'function'){
+      const body = await error.context.json();
+      if(body && (body.error || body.message)) return String(body.error || body.message);
+    }
+  }catch(e){}
+  return error ? error.message : 'Unbekannter Fehler';
+}
 async function callStartHand(){
   if(onlineBusy) return;
   onlineBusy = true;
   try{
     const { data, error } = await sb.functions.invoke('start_hand', { body: { table_id: currentOnlineTableId } });
-    if(error || (data && data.error)){ showToast('Fehler: ' + (data?.error || error.message)); return; }
+    if(error || (data && data.error)){ showToast('Fehler: ' + await edgeErrorText(data, error)); return; }
     await refreshOnlineTableAndSeat();
   } finally { onlineBusy = false; }
 }
@@ -1004,7 +1015,7 @@ async function callSubmitAction(action, amount){
     const body = { table_id: currentOnlineTableId, action };
     if(amount != null) body.amount = amount;
     const { data, error } = await sb.functions.invoke('submit_action', { body });
-    if(error || (data && data.error)){ showToast('Fehler: ' + (data?.error || error.message)); return; }
+    if(error || (data && data.error)){ showToast('Fehler: ' + await edgeErrorText(data, error)); return; }
   } finally { onlineBusy = false; }
 }
 
