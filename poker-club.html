@@ -1095,7 +1095,83 @@ function onlinePokerSeatHtml(slot, seatRow, seatNo, hs, isMe){
     </div>${useAbsoluteBox ? platePlateHtml : ''}${standaloneNameHtml}${standaloneStackHtml}${standaloneHoleCardsHtml}${standalonePosTagHtml}`;
 }
 
+// ---- Persönliches Tisch-Design für Online-Tische (nur lokal in diesem Browser, wirkt nur auf die eigene Ansicht) ----
+const ONLINE_DESIGN_DEFAULTS = { deck:null, felt:null, holeScale:1, boardScale:1, nameScale:1, stackScale:1 };
+let onlineDesignCache = null;
+function onlineDesignKey(){ return 'chipmate_onlinedesign_' + (currentUser ? currentUser.id : 'anon'); }
+function getOnlineDesign(){
+  if(!onlineDesignCache){
+    let d = {};
+    try{ d = JSON.parse(localStorage.getItem(onlineDesignKey()) || '{}') || {}; }catch(e){ d = {}; }
+    onlineDesignCache = Object.assign({}, ONLINE_DESIGN_DEFAULTS, d);
+  }
+  return onlineDesignCache;
+}
+function setOnlineDesign(patch, rerender){
+  onlineDesignCache = Object.assign({}, getOnlineDesign(), patch);
+  try{ localStorage.setItem(onlineDesignKey(), JSON.stringify(onlineDesignCache)); }catch(e){}
+  if(rerender !== false) render();
+}
+function resetOnlineDesign(){
+  onlineDesignCache = Object.assign({}, ONLINE_DESIGN_DEFAULTS);
+  try{ localStorage.removeItem(onlineDesignKey()); }catch(e){}
+  closeModal(); render();
+}
+function openOnlineDesignModal(){
+  const d = getOnlineDesign();
+  const slider = (label, key, min, max) => `
+    <div class="field" style="margin-bottom:12px;"><label>${label} <span id="od-v-${key}" style="font-weight:400;opacity:.7;">${Math.round(d[key]*100)}%</span></label>
+      <input type="range" min="${min}" max="${max}" step="5" value="${Math.round(d[key]*100)}"
+        oninput="document.getElementById('od-v-${key}').textContent=this.value+'%'; setOnlineDesign({${key}: this.value/100})" style="width:100%;"></div>`;
+  document.getElementById('modal-root').innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this) closeModal()">
+      <div class="modal" style="max-width:420px;">
+        <h2>🎨 Mein Tisch-Design</h2>
+        <p class="hint">Gilt nur für deine Ansicht an Online-Tischen, in diesem Browser. Andere sehen davon nichts.</p>
+        ${slider('Eigene Karten (Grösse)', 'holeScale', 60, 300)}
+        ${slider('Community-Karten (Grösse)', 'boardScale', 60, 300)}
+        ${slider('Name (Grösse)', 'nameScale', 50, 250)}
+        ${slider('Stack (Grösse)', 'stackScale', 50, 250)}
+        <div class="field-row">
+          <div class="field"><label>Kartenfarben</label>
+            <select onchange="setOnlineDesign({deck: this.value || null})">
+              <option value="" ${!d.deck?'selected':''}>Wie Club-Standard</option>
+              <option value="2color" ${d.deck==='2color'?'selected':''}>2-Farben</option>
+              <option value="4color" ${d.deck==='4color'?'selected':''}>4-Farben (besser lesbar)</option>
+            </select>
+          </div>
+          <div class="field"><label>Filzfarbe</label>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <input type="color" value="${d.felt || tableSettings.felt}" onchange="setOnlineDesign({felt: this.value})" style="width:44px;height:30px;padding:0;border:none;background:none;">
+              <button class="btn-text" onclick="setOnlineDesign({felt:null}); openOnlineDesignModal()">zurücksetzen</button>
+            </div>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" onclick="resetOnlineDesign()">Alles zurücksetzen</button>
+          <button class="btn btn-primary" onclick="closeModal()">Fertig</button>
+        </div>
+      </div>
+    </div>`;
+}
+// Überschreibt die globalen Tisch-Einstellungen nur für die Dauer des Online-Renderns
+let onlineDesignActive = null;
 function renderOnlineTableView(){
+  const d = getOnlineDesign();
+  const saved = { deck: tableSettings.deck, felt: tableSettings.felt, nameSizeScale: tableSettings.nameSizeScale, stackSizeScale: tableSettings.stackSizeScale };
+  if(d.deck) tableSettings.deck = d.deck;
+  if(d.felt) tableSettings.felt = d.felt;
+  tableSettings.nameSizeScale = (saved.nameSizeScale||1) * d.nameScale;
+  tableSettings.stackSizeScale = (saved.stackSizeScale||1) * d.stackScale;
+  onlineDesignActive = d;
+  try{ return renderOnlineTableViewInner(); }
+  finally{
+    onlineDesignActive = null;
+    tableSettings.deck = saved.deck; tableSettings.felt = saved.felt;
+    tableSettings.nameSizeScale = saved.nameSizeScale; tableSettings.stackSizeScale = saved.stackSizeScale;
+  }
+}
+function renderOnlineTableViewInner(){
   const tbl = onlineTables.find(x => x.id === currentOnlineTableId);
   if(!tbl) return `<div class="panel"><div class="empty-state">Tisch wird geladen…</div></div>`;
   if(onlineMySeat == null) return renderOnlineSeatPicker(tbl);
@@ -1151,6 +1227,7 @@ function renderOnlineTableView(){
       <div><h1>Online-Tisch</h1><p class="lede" style="margin-bottom:0">Blinds ${formatMoney(tbl.small_blind)} / ${formatMoney(tbl.big_blind)} · ${seatCount} Sitze${hs && hs.hand_no ? ` · Hand #${hs.hand_no}` : ''}${isFinished ? ' · Tisch abgeschlossen' : ''}</p></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button class="btn btn-secondary btn-sm" onclick="backToOnlineLobby()">← Lobby</button>
+        <button class="btn btn-secondary btn-sm" onclick="openOnlineDesignModal()">🎨 Design</button>
         ${!isFinished ? `<button class="btn btn-secondary btn-sm" onclick="addOnlineBuyin()">+ Nachkaufen</button>` : ''}
         ${!isFinished ? `<button class="btn btn-secondary btn-sm" onclick="leaveOnlineSeat()">Platz verlassen</button>` : ''}
       </div>
@@ -7081,7 +7158,8 @@ function tableFeltStyleAttr(layoutOverride){
   // s. .board-card CSS + CUSTOM_CARD_IMG_STYLE "100% 100%" statt "cover"). An EINER zentralen Stelle
   // gesetzt (tableFeltStyleAttr läuft auf .poker-table-oval in jedem Render-Pfad — Live, Designer,
   // Replay, Hands-Review — damit es überall konsistent gilt, nicht nur an einer Stelle (Kohärenz).
-  const cardVars = `--board-card-w-scale:${layout && layout.boardCardWScale!=null ? layout.boardCardWScale : 1};--board-card-h-scale:${layout && layout.boardCardHScale!=null ? layout.boardCardHScale : 1};--hole-card-w-scale:${layout && layout.holeCardWScale!=null ? layout.holeCardWScale : 1};--hole-card-h-scale:${layout && layout.holeCardHScale!=null ? layout.holeCardHScale : 1};`;
+  const ods = onlineDesignActive || { holeScale:1, boardScale:1 };
+  const cardVars = `--board-card-w-scale:${((layout && layout.boardCardWScale!=null ? layout.boardCardWScale : 1) * ods.boardScale).toFixed(3)};--board-card-h-scale:${((layout && layout.boardCardHScale!=null ? layout.boardCardHScale : 1) * ods.boardScale).toFixed(3)};--hole-card-w-scale:${((layout && layout.holeCardWScale!=null ? layout.holeCardWScale : 1) * ods.holeScale).toFixed(3)};--hole-card-h-scale:${((layout && layout.holeCardHScale!=null ? layout.holeCardHScale : 1) * ods.holeScale).toFixed(3)};`;
   if(layout && layout.tableHidden){
     return `background:transparent;border:none;box-shadow:none;${sizeVars}${cardVars}`;
   }
