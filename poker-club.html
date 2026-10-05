@@ -8956,7 +8956,19 @@ function evaluate7WithCards(holeCards, board){
   return { value: best, cards: bestCards, tagged };
 }
 function taggedCardsHtml(tagged){
-  return tagged.map(t => `<span class="board-card ${suitColor(t.code.slice(-1))}${t.isHole?' hole-card':''}">${t.code}</span>`).join('');
+  // Gleiche Darstellung wie überall (cardChipHtml): eigene Kartenbilder des Clubs bzw. Farb-/Suit-Klassen
+  // des Standard-Decks. Hole-Cards der besten Hand behalten zusätzlich ihre Hervorhebung ("hole-card").
+  return tagged.map(t => {
+    const code = t.code;
+    const suit = code.slice(-1), rank = code.slice(0,-1);
+    const suitClass = { '♠':'suit-spades', '♥':'suit-hearts', '♣':'suit-clubs', '♦':'suit-diamonds' }[suit] || '';
+    const hole = t.isHole ? ' hole-card' : '';
+    const custom = customCardImageFor(code);
+    if(custom){
+      return `<span class="board-card${hole}" style="background-image:url('${custom}');${CUSTOM_CARD_IMG_STYLE}">${rank}${suit}</span>`;
+    }
+    return `<span class="board-card ${suitColor(suit)} ${suitClass}${hole}">${rank}${suit}</span>`;
+  }).join('');
 }
 const RANK_NAMES = {2:'2',3:'3',4:'4',5:'5',6:'6',7:'7',8:'8',9:'9',10:'10',11:'Jack',12:'Queen',13:'King',14:'Ace'};
 function describeHand(val){
