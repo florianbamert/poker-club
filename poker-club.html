@@ -8680,9 +8680,10 @@ function contribute(pid, newTotal){
 }
 function potTotal(){ return Object.values(handFlow.totalContrib).reduce((a,b)=>a+b,0); }
 function potCenterDisplayAmount(){
-  // Während einer aktiven Bet-Runde zeigt der Pot in der Mitte nur den Betrag aus bereits
-  // abgeschlossenen Strassen — die aktuellen Chips vor den Spielern "wandern" erst beim
-  // Strassenwechsel sichtbar in den Pot, statt sofort mitgezählt zu werden.
+  // Gilt nur für den CHIP-STACK-Stapel in der Tischmitte: Während einer aktiven Bet-Runde zeigt er nur
+  // den Betrag aus bereits abgeschlossenen Strassen — die aktuellen Chips vor den Spielern "wandern"
+  // erst beim Strassenwechsel sichtbar in den Pot. Die ZAHL unter dem Stapel zeigt dagegen immer den
+  // gesamten Pot inkl. der aktuell gesetzten Bets (potTotal()).
   const streetSum = Object.values(handFlow.streetContrib||{}).reduce((a,b)=>a+b,0);
   return Math.max(0, potTotal() - streetSum);
 }
@@ -9964,7 +9965,7 @@ function renderHandFlowUI(s){
           </div>
           <div class="pot-center${justCollected ? ' collecting' : ''}" style="${potCenterStyleAttr(handFlow.seats.length, s.id)}">
             ${potCenterDisplayAmount() > 0.0001 ? chipStackHtml(potCenterDisplayAmount(), chipProfileForTable) : ''}
-            <div class="amt">${fmtChipPlain(potCenterDisplayAmount())}</div>
+            <div class="amt">${fmtChipPlain(potTotal())}</div>
             ${potBreakdownHtml()}
           </div>
         </div>
