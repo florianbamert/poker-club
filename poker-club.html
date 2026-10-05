@@ -2225,6 +2225,63 @@ function startClubSync(){
   }, 20000);
 }
 function stopClubSync(){ if(clubSyncTimerId){ clearInterval(clubSyncTimerId); clubSyncTimerId = null; } }
+// ===== Bilder aus dem Club-JSON auslagern (Supabase Storage, Bucket "club-images") =====
+// Grosse Data-URLs (Avatare, Layout-/Deck-Bilder ...) lassen den Club-Datensatz auf viele MB anwachsen, dann
+// scheitern Speichern und Laden. Vor jedem Speichern werden sie hochgeladen und durch die Bild-Adresse ersetzt.
+const IMG_EXTERNALIZE_MIN = 30 * 1024;   // Zeichen — kleinere Bilder bleiben im JSON
+let imageStorageUnavailable = false;
+async function sha256Hex(str){
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+async function externalizeClubImages(){
+  if(!currentClub || !currentClubId || imageStorageUnavailable || !canWrite()) return;
+  // 1. alle grossen Data-URLs einsammeln (Parent + Schlüssel, damit wir sie ersetzen können)
+  const found = [];
+  const walk = (node) => {
+    if(!node || typeof node !== 'object') return;
+    for(const k of Object.keys(node)){
+      const v = node[k];
+      if(typeof v === 'string'){
+        if(v.length >= IMG_EXTERNALIZE_MIN && v.startsWith('data:image/')) found.push([node, k]);
+      } else if(v && typeof v === 'object') walk(v);
+    }
+  };
+  walk(currentClub);
+  if(!found.length) return;
+  const uploads = new Map();   // Data-URL -> Promise<URL>
+  const upload = (dataUrl) => {
+    if(uploads.has(dataUrl)) return uploads.get(dataUrl);
+    const p = (async () => {
+      const m = /^data:(image\/[a-z0-9.+-]+);base64,/i.exec(dataUrl);
+      if(!m) throw new Error('unbekanntes Bildformat');
+      const type = m[1].toLowerCase();
+      const ext = ({'image/jpeg':'jpg','image/png':'png','image/webp':'webp','image/gif':'gif','image/svg+xml':'svg'})[type] || 'img';
+      const hash = (await sha256Hex(dataUrl)).slice(0, 40);
+      const path = `${currentClubId}/${hash}.${ext}`;
+      const blob = await (await fetch(dataUrl)).blob();
+      const { error } = await sb.storage.from('club-images').upload(path, blob, { contentType: type, upsert: true, cacheControl: '31536000' });
+      if(error) throw error;
+      return sb.storage.from('club-images').getPublicUrl(path).data.publicUrl;
+    })();
+    uploads.set(dataUrl, p);
+    return p;
+  };
+  try{
+    for(let i = 0; i < found.length; i += 4){
+      const batch = found.slice(i, i + 4);
+      const urls = await Promise.all(batch.map(([node, k]) => upload(node[k])));
+      batch.forEach(([node, k], j) => { if(typeof node[k] === 'string' && node[k].startsWith('data:image/')) node[k] = urls[j]; });
+    }
+  }catch(e){
+    console.error('externalizeClubImages failed', e);
+    const msg = (e && (e.message || e.error)) || String(e);
+    if(/bucket|not found|policy|row-level|security|403|404/i.test(msg)){
+      imageStorageUnavailable = true;
+      showToast('⚠️ Bild-Speicher nicht eingerichtet — bitte chipmate_club_images_storage.sql in Supabase ausführen.');
+    }
+  }
+}
 let clubSaveTimer = null;
 function saveClubData(){
   // Bei jeder kleinen Aktion (Chip-Eingabe, Klick, etc.) wurde bisher SOFORT der komplette Club
@@ -2241,6 +2298,7 @@ function saveClubData(){
   clubSaveTimer = setTimeout(async () => {
     clubSaveTimer = null;
     try{
+      await externalizeClubImages();
       const savedAt = new Date().toISOString();
       const { error } = await sb.from('club_data')
         .update({ data: currentClub, updated_at: savedAt })
@@ -2847,6 +2905,7 @@ function openCropModal(dataUrl, previewId, hiddenInputId, onComplete){
     cropState.left = (size-w)/2; cropState.top = (size-h)/2;
     applyCropTransform();
   };
+  if(/^https?:/i.test(dataUrl)) img.crossOrigin = 'anonymous';
   img.src = dataUrl;
   const container = document.getElementById('crop-container');
   const onDown = (x,y) => { cropState.dragging = true; cropState.startX = x; cropState.startY = y; cropState.startLeft = cropState.left; cropState.startTop = cropState.top; container.style.cursor='grabbing'; };
@@ -6576,6 +6635,8 @@ async function shrinkClubImages(){
       if(l.tableImage)      l.tableImage      = await shrink(l.tableImage, 1400, 0.8);
       if(l.boxImage)        l.boxImage        = await shrink(l.boxImage, 700, 0.85);
     }
+    say('Lagere Bilder in den Bild-Speicher aus …');
+    await externalizeClubImages();
     const after = JSON.stringify(currentClub).length;
     say(`Fertig: ${(before/1048576).toFixed(1)} MB → ${(after/1048576).toFixed(1)} MB. Speichere …`);
     // sofort und mit Rückmeldung speichern (nicht im 600-ms-Sammler)
@@ -12911,6 +12972,7 @@ function formatBytesApprox(chars){
 function loadImageAsync(dataUrl){
   return new Promise((resolve, reject) => {
     const img = new Image();
+    if(/^https?:/i.test(dataUrl)) img.crossOrigin = 'anonymous';   // ausgelagerte Bilder: Canvas darf sie lesen
     img.onload = () => resolve(img);
     img.onerror = reject;
     img.src = dataUrl;
