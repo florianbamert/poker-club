@@ -982,9 +982,9 @@ function onlinePokerSeatHtml(slot, seatRow, seatNo, hs, isMe){
   if(!seatRow || !seatRow.user_id){
     const nameInnerHtml = `<div class="seat-name" style="color:${textColor};transform:scale(${slot.nameScale});transform-origin:center;">Frei</div>`;
     const standaloneNameHtml = useAbsoluteName ? `<div style="position:absolute;left:${slot.nameX}%;top:${slot.nameY}%;transform:translate(-50%,-50%);z-index:5;max-width:16cqw;">${nameInnerHtml}</div>` : '';
-    const platePlateHtml = `<div class="seat-plate" style="${seatPlateBgStyleAttr(slot, useAbsoluteBox)}">${!useAbsoluteName ? nameInnerHtml : ''}</div>`;
+    const platePlateHtml = `<div class="seat-plate" ${slot.seatAttrs||''} style="${seatPlateBgStyleAttr(slot, useAbsoluteBox)}">${!useAbsoluteName ? nameInnerHtml : ''}</div>`;
     return `
-      <div class="poker-seat" style="left:${slot.left}%;top:${slot.top}%;width:${avatarSizePercent(slot.avatarScale)}%;opacity:.45;z-index:${slot.zAvatar!=null?slot.zAvatar:2};">
+      <div class="poker-seat" ${slot.seatAttrs||''} style="left:${slot.left}%;top:${slot.top}%;width:${avatarSizePercent(slot.avatarScale)}%;opacity:.45;z-index:${slot.zAvatar!=null?slot.zAvatar:2};">
         ${!useAbsoluteBox ? platePlateHtml : ''}
       </div>${useAbsoluteBox ? platePlateHtml : ''}${standaloneNameHtml}`;
   }
@@ -1024,14 +1024,14 @@ function onlinePokerSeatHtml(slot, seatRow, seatNo, hs, isMe){
   const holeCardsVAnchor = (phase === 'showdown' || phase === 'done') ? -55 : -20;
   const standaloneHoleCardsHtml = (!folded && cardsHtml) ? `<div class="seat-holecards${slot.holeCardsCompact?' compact':''}" style="position:absolute;left:${slot.holeCardsX}%;top:${slot.holeCardsY}%;transform:translate(-50%,${holeCardsVAnchor}%) scale(${slot.holeCardsScale});z-index:${slot.zHoleCards!=null?slot.zHoleCards:3};">${cardsHtml}</div>` : '';
   const platePlateHtml = `
-    <div class="seat-plate" style="${seatPlateBgStyleAttr(slot, useAbsoluteBox)}">
+    <div class="seat-plate" ${slot.seatAttrs||''} style="${seatPlateBgStyleAttr(slot, useAbsoluteBox)}">
       ${!useAbsoluteName ? nameInnerHtml : ''}
       ${!useAbsoluteStack ? stackInnerHtml : ''}
     </div>`;
   const standalonePosTagHtml = isDealer ? `<div class="pos-tag" style="position:absolute;left:${slot.posTagX}%;top:${slot.posTagY}%;transform:translate(-50%,-50%) rotate(${slot.posTagRotation}deg) scale(${slot.posTagScale});z-index:5;background:${tableSettings.posColor};color:#fff;">BTN</div>` : '';
 
   return `
-    <div class="poker-seat${folded?' folded':''}${isActor?' active':''}" style="left:${slot.left}%;top:${slot.top}%;width:${avatarSizePercent(slot.avatarScale)}%;z-index:${slot.zAvatar!=null?slot.zAvatar:2};">
+    <div class="poker-seat${folded?' folded':''}${isActor?' active':''}" ${slot.seatAttrs||''} style="left:${slot.left}%;top:${slot.top}%;width:${avatarSizePercent(slot.avatarScale)}%;z-index:${slot.zAvatar!=null?slot.zAvatar:2};">
       ${avatarHtml(displayObj, avatarSeatStyleAttr(slot.avatarScale, slot.zAvatar))}
       ${!useAbsoluteBox ? platePlateHtml : ''}
     </div>${useAbsoluteBox ? platePlateHtml : ''}${standaloneNameHtml}${standaloneStackHtml}${standaloneHoleCardsHtml}${standalonePosTagHtml}`;
@@ -1070,7 +1070,7 @@ function renderOnlineTableView(){
   const matchingLayouts = layoutTemplates.filter(lt => lt.seatCount === seatCount);
   const effectiveLayoutId = onlineMyLayoutPref !== undefined ? onlineMyLayoutPref : tbl.layout_id;
   const chosenLayout = effectiveLayoutId ? matchingLayouts.find(lt => lt.id === effectiveLayoutId) || null : null;
-  const slots = getSeatSlotsForRender(seatCount, null, chosenLayout);
+  const slots = getSeatSlotsForView(seatCount, null, chosenLayout, onlineMySeat);
   // getSeatSlotsForRender(seatCount, null, chosenLayout) already passes chosenLayout explicitly as
   // layoutOverride, so a null chosenLayout correctly falls through to the generic seatPositions(n)
   // circle inside that function (sessionId=null there is harmless). tableFeltStyleAttr() is
@@ -1083,7 +1083,8 @@ function renderOnlineTableView(){
     const seatRow = tbl.seats.find(s => s.seat_no === seatNo);
     const isMe = seatNo === onlineMySeat;
     const bet = hs && hs.bets ? (hs.bets[String(seatNo)] || 0) : 0;
-    return onlinePokerSeatHtml(slots[seatNo], seatRow, seatNo, hs, isMe)
+    const slotView = Object.assign({}, slots[seatNo], { seatAttrs: seatDataAttrs(seatNo, slots.viewMeta, onlineMySeat) });
+    return onlinePokerSeatHtml(slotView, seatRow, seatNo, hs, isMe)
       + (seatRow && bet > 0.0001 ? betLineChipHtml(slots[seatNo], bet, null) : '');
   }).join('');
 
@@ -7018,6 +7019,92 @@ function layerZIndex(layout, type){
   const idx = order.indexOf(type);
   return 2 + (idx>=0 ? idx : 0); // ergibt 2, 3 oder 4
 }
+/* ================= Persönliche Tisch-Drehung (nur Darstellung) =================
+   Pro Person und pro Tischgrösse (Heads-up / 6-Max / 10-Max) lässt sich der Tisch visuell drehen:
+   Rechtsklick (am Handy langes Drücken) auf einen Sitz -> Menü. Die Spiel-Logik (Sitznummern,
+   Reihenfolge, Positionen) bleibt unverändert — nur welcher Sitz an welcher Stelle gezeichnet wird.
+   Gespeichert pro Gerät/Login in localStorage. Der Table-Designer nutzt die Drehung bewusst NICHT. */
+function seatViewSizeKey(n){ return n<=2 ? '2' : (n<=6 ? '6' : '10'); }
+function seatViewStorageKey(){ return 'chipmate_seatview_' + (currentUser ? currentUser.id : ''); }
+function getSeatViewPrefs(){
+  try{ return JSON.parse(localStorage.getItem(seatViewStorageKey()) || '{}') || {}; }catch(e){ return {}; }
+}
+function getSeatViewPref(key){
+  const all = getSeatViewPrefs();
+  const p = all[key] || {};
+  return { rot: Number.isFinite(p.rot) ? p.rot : 0, hero: !!p.hero };
+}
+function setSeatViewPref(key, patch){
+  const all = getSeatViewPrefs();
+  all[key] = Object.assign(getSeatViewPref(key), patch);
+  try{ localStorage.setItem(seatViewStorageKey(), JSON.stringify(all)); }catch(e){}
+  render();
+  if(typeof replayState !== 'undefined' && replayState && document.querySelector('#modal-root .modal')) renderReplayModal();
+}
+// Wie getSeatSlotsForRender, aber gedreht: der Slot mit Index a (tatsächlicher Sitz) bekommt die
+// Position/Darstellung des Slots (a + rot) mod n. mySlot = Index des eigenen Sitzes (oder null).
+function getSeatSlotsForView(seatCount, sessionId, layoutOverride, mySlot){
+  const raw = getSeatSlotsForRender(seatCount, sessionId, layoutOverride);
+  const n = raw.length;
+  const key = seatViewSizeKey(n);
+  const pref = getSeatViewPref(key);
+  // "Unten" = der Slot mit dem grössten top-Wert (bei Gleichstand der, der am nächsten zur Mitte liegt).
+  let B = 0;
+  raw.forEach((p,i) => {
+    if(p.top > raw[B].top + 0.01 || (Math.abs(p.top - raw[B].top) <= 0.01 && Math.abs(p.left-50) < Math.abs(raw[B].left-50))) B = i;
+  });
+  let rot = ((pref.rot % n) + n) % n;
+  if(pref.hero && mySlot != null && mySlot >= 0 && mySlot < n) rot = (((B - mySlot) % n) + n) % n;
+  const R = raw.map((_, a) => raw[(a + rot) % n]);
+  R.viewMeta = { n, key, bottom: B, rot };
+  return R;
+}
+function seatDataAttrs(a, meta, me){
+  if(a == null || !meta) return '';
+  return `data-seat-slot="${a}" data-seat-n="${meta.n}" data-seat-key="${meta.key}" data-seat-bottom="${meta.bottom}" data-seat-me="${me!=null ? me : ''}"`;
+}
+function closeSeatMenu(){ const m = document.getElementById('seat-view-menu'); if(m) m.remove(); }
+function showSeatMenu(x, y, el){
+  closeSeatMenu();
+  const a = Number(el.dataset.seatSlot), n = Number(el.dataset.seatN), B = Number(el.dataset.seatBottom);
+  const key = el.dataset.seatKey;
+  const me = el.dataset.seatMe;
+  const pref = getSeatViewPref(key);
+  const rotFor = (((B - a) % n) + n) % n;
+  const label = key==='2' ? 'Heads-up' : key+'-Max';
+  const menu = document.createElement('div');
+  menu.id = 'seat-view-menu';
+  menu.style.cssText = `position:fixed;z-index:20000;left:${Math.min(x, window.innerWidth-260)}px;top:${Math.min(y, window.innerHeight-170)}px;background:var(--tile,#fff);color:var(--ink,#222);border:1px solid var(--paper-line,#ddd);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.3);padding:6px;min-width:240px;font-size:13px;`;
+  const item = (txt, fn, disabled) => `<button ${disabled?'disabled':''} onclick="${fn}" style="display:block;width:100%;text-align:left;background:none;border:none;padding:8px 10px;border-radius:7px;cursor:${disabled?'default':'pointer'};color:inherit;opacity:${disabled?.45:1};font:inherit;">${txt}</button>`;
+  menu.innerHTML = `
+    <div style="padding:4px 10px 6px;font-size:11px;color:var(--ink-soft,#777);font-weight:700;text-transform:uppercase;">Ansicht (${label})</div>
+    ${item('🪑 Hier sitzen — diesen Sitz nach unten drehen', `closeSeatMenu();setSeatViewPref('${key}',{rot:${rotFor},hero:false})`)}
+    ${item(pref.hero ? '✓ Mein Sitz immer unten (bevorzugter Sitz)' : '⭐ Mein Sitz immer unten (bevorzugter Sitz)', `closeSeatMenu();setSeatViewPref('${key}',{hero:${!pref.hero}})`, me==='')}
+    ${me==='' ? '<div style="padding:0 10px 4px;font-size:11px;color:var(--ink-soft,#777);">Du sitzt an diesem Tisch nicht (bzw. dein Login ist keinem Spieler zugeordnet).</div>' : ''}
+    ${item('↺ Standardansicht', `closeSeatMenu();setSeatViewPref('${key}',{rot:0,hero:false})`, pref.rot===0 && !pref.hero)}`;
+  document.body.appendChild(menu);
+}
+(function bindSeatMenu(){
+  if(window.__seatMenuBound) return;
+  window.__seatMenuBound = true;
+  document.addEventListener('contextmenu', e => {
+    const el = e.target.closest && e.target.closest('[data-seat-slot]');
+    if(!el) return;
+    e.preventDefault();
+    showSeatMenu(e.clientX, e.clientY, el);
+  });
+  document.addEventListener('click', e => {
+    if(!(e.target.closest && e.target.closest('#seat-view-menu'))) closeSeatMenu();
+  });
+  let pressTimer = null;
+  document.addEventListener('touchstart', e => {
+    const el = e.target.closest && e.target.closest('[data-seat-slot]');
+    if(!el) return;
+    const t = e.touches[0];
+    pressTimer = setTimeout(() => { pressTimer = null; showSeatMenu(t.clientX, t.clientY, el); }, 600);
+  }, {passive:true});
+  ['touchend','touchmove','touchcancel'].forEach(ev => document.addEventListener(ev, () => { if(pressTimer){ clearTimeout(pressTimer); pressTimer = null; } }, {passive:true}));
+})();
 function getSeatSlotsForRender(seatCount, sessionId, layoutOverride){
   const layout = layoutOverride || getActiveLayout(sessionId || (handFlow ? handFlow.sessionId : null) || handsSelectedSessionId);
   if(layout){
@@ -9812,7 +9899,9 @@ function renderHandFlowUI(s){
   const canAddPlayer = s.status==='open' && handFlow.seats.length < 10 && currentClub.players.some(p => !p.archived && !s.participants.find(x=>x.playerId===p.id));
   ensureSeatSlotAssignments(s);
   const totalSlots = resolveTotalSlots(s);
-  const allPositions = getSeatSlotsForRender(totalSlots, s.id);
+  const myPlayerLive = myPlayer();
+  const mySlotLive = (myPlayerLive && s.seatSlotAssignments && s.seatSlotAssignments[myPlayerLive.id]!=null && handFlow.seats.includes(myPlayerLive.id)) ? s.seatSlotAssignments[myPlayerLive.id] : null;
+  const allPositions = getSeatSlotsForView(totalSlots, s.id, undefined, mySlotLive);
   ensureBoxImageAspect(getActiveLayout(s.id));
   const busyIds = new Set([...handFlow.seats, ...bustedGhosts.map(p=>p.playerId), ...pendingJoiners.map(p=>p.playerId)]);
   const ringOrder = (s.seatOrder||[]).filter(pid => busyIds.has(pid));
@@ -9865,14 +9954,15 @@ function renderHandFlowUI(s){
     const isShowdownReveal = handFlow.street === 'showdown';
     const holeCardsVAnchor = isShowdownReveal ? -55 : -20;
     const standaloneHoleCardsHtml = (!folded) ? `<div class="seat-holecards${pos.holeCardsCompact?' compact':''}" style="position:absolute;left:${pos.holeCardsX}%;top:${pos.holeCardsY}%;transform:translate(-50%,${holeCardsVAnchor}%) scale(${pos.holeCardsScale});z-index:${pos.zHoleCards!=null?pos.zHoleCards:3};">${holeCardsInner}</div>` : '';
+    const seatAttrsLive = seatDataAttrs(s.seatSlotAssignments[pid], allPositions.viewMeta, mySlotLive);
     const platePlateHtml = `
-        <div class="seat-plate" style="${seatPlateBgStyleAttr(pos, useAbsoluteBox)}">
+        <div class="seat-plate" ${seatAttrsLive} style="${seatPlateBgStyleAttr(pos, useAbsoluteBox)}">
           ${!useAbsoluteName ? nameInnerHtml : ''}
           ${!useAbsoluteStack ? stackInnerHtml : ''}
         </div>`;
     const standalonePosTagHtml = `<div class="pos-tag" style="position:absolute;left:${pos.posTagX}%;top:${pos.posTagY}%;transform:translate(-50%,-50%) rotate(${pos.posTagRotation}deg) scale(${pos.posTagScale});z-index:5;background:${isMainTag ? tableSettings.posColor : hexToRgba(tableSettings.posColor,.28)};color:${isMainTag ? '#fff' : tableSettings.posColor};">${tag}</div>`;
     return `
-      <div class="poker-seat${folded?' folded':''}${isActor?' active':''}" style="left:${pos.left}%;top:${pos.top}%;width:${avatarSizePercent(pos.avatarScale)}%;z-index:${pos.zAvatar!=null?pos.zAvatar:2};">
+      <div class="poker-seat${folded?' folded':''}${isActor?' active':''}" ${seatAttrsLive} style="left:${pos.left}%;top:${pos.top}%;width:${avatarSizePercent(pos.avatarScale)}%;z-index:${pos.zAvatar!=null?pos.zAvatar:2};">
         ${avatarHtml(pl, avatarSeatStyleAttr(pos.avatarScale, pos.zAvatar))}
         ${!useAbsoluteBox ? platePlateHtml : ''}
       </div>${useAbsoluteBox ? platePlateHtml : ''}${standaloneNameHtml}${standaloneStackHtml}${standaloneHoleCardsHtml}${standalonePosTagHtml}`;
@@ -10599,11 +10689,14 @@ function replayTableInnerHtml(s, h, seats, timeline, stepIndex, stepFnName){
   const assign = s.seatSlotAssignments || {};
   const maxAssigned = Math.max(-1, ...seats.map(pid => assign[pid]!=null ? assign[pid] : -1));
   const totalSlotsR = Math.max(resolveTotalSlots(s), seats.length, maxAssigned+1);
-  const allPositions = getSeatSlotsForRender(totalSlotsR, s.id);
-  const slotFor = (pid, i) => {
+  const myPlayerRp = myPlayer();
+  const mySlotRp = (myPlayerRp && seats.includes(myPlayerRp.id) && assign[myPlayerRp.id]!=null) ? assign[myPlayerRp.id] : null;
+  const allPositions = getSeatSlotsForView(totalSlotsR, s.id, undefined, mySlotRp);
+  const slotIdxFor = (pid, i) => {
     const idx = assign[pid];
-    return (idx!=null && allPositions[idx]) ? allPositions[idx] : (allPositions[i] || allPositions[0]);
+    return (idx!=null && allPositions[idx]) ? idx : (allPositions[i] ? i : 0);
   };
+  const slotFor = (pid, i) => allPositions[slotIdxFor(pid, i)];
   const showHole = state.street==='showdown' || state.street==='result';
   const chipProfileForReplay = s.chipProfileId ? getChipProfile(s.chipProfileId) : null;
 
@@ -10627,15 +10720,16 @@ function replayTableInnerHtml(s, h, seats, timeline, stepIndex, stepFnName){
     const standaloneStackHtml = (useAbsoluteStack && stackInnerHtml) ? `<div style="position:absolute;left:${pos.stackX}%;top:${pos.stackY}%;transform:translate(-50%,-50%);z-index:5;">${stackInnerHtml}</div>` : '';
     // Aufgedeckte Hole-Cards beim Showdown: gleicher Anker (-55%) wie im Live-Tisch beim Showdown.
     const standaloneHoleCardsHtml = cards ? `<div class="seat-holecards${pos.holeCardsCompact?' compact':''}" style="position:absolute;left:${pos.holeCardsX}%;top:${pos.holeCardsY}%;transform:translate(-50%,-55%) scale(${pos.holeCardsScale});z-index:${pos.zHoleCards!=null?pos.zHoleCards:3};">${cards.map(cardChipHtml).join('')}</div>` : '';
+    const seatAttrsRp = seatDataAttrs(slotIdxFor(pid, i), allPositions.viewMeta, mySlotRp);
     const platePlateHtml = `
-        <div class="seat-plate" style="${seatPlateBgStyleAttr(pos, useAbsoluteBox)}">
+        <div class="seat-plate" ${seatAttrsRp} style="${seatPlateBgStyleAttr(pos, useAbsoluteBox)}">
           ${!useAbsoluteName ? nameInnerHtml : ''}
           ${!useAbsoluteStack ? stackInnerHtml : ''}
         </div>`;
     const standalonePosTagHtml = `<div class="pos-tag" style="position:absolute;left:${pos.posTagX}%;top:${pos.posTagY}%;transform:translate(-50%,-50%) rotate(${pos.posTagRotation}deg) scale(${pos.posTagScale});z-index:5;background:${isMainTag ? tableSettings.posColor : hexToRgba(tableSettings.posColor,.28)};color:${isMainTag ? '#fff' : tableSettings.posColor};">${tag}</div>`;
     const actionBadgeHtml = (isActor && state.lastAction) ? `<div style="position:absolute;left:${pos.left}%;top:${pos.top}%;transform:translate(-50%,0);margin-top:3.2cqw;z-index:7;"><div class="action-badge" style="background:${actionBadgeColor(state.lastAction)};">${state.lastAction.toUpperCase()}</div></div>` : '';
     return `
-      <div class="poker-seat${folded?' folded':''}${isActor?' active':''}" style="left:${pos.left}%;top:${pos.top}%;width:${avatarSizePercent(pos.avatarScale)}%;z-index:${pos.zAvatar!=null?pos.zAvatar:2};">
+      <div class="poker-seat${folded?' folded':''}${isActor?' active':''}" ${seatAttrsRp} style="left:${pos.left}%;top:${pos.top}%;width:${avatarSizePercent(pos.avatarScale)}%;z-index:${pos.zAvatar!=null?pos.zAvatar:2};">
         ${avatarHtml(pl, avatarSeatStyleAttr(pos.avatarScale, pos.zAvatar))}
         ${!useAbsoluteBox ? platePlateHtml : ''}
       </div>${useAbsoluteBox ? platePlateHtml : ''}${standaloneNameHtml}${standaloneStackHtml}${standaloneHoleCardsHtml}${standalonePosTagHtml}${actionBadgeHtml}`;
