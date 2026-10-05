@@ -12561,7 +12561,7 @@ function handleCardSheetUpload(input){
         rect: { left:0, top:0, right:100, bottom:100 },
         rows: 4,
         cols: 13,
-        inset: 0, cardW:null, cardH:null, insL:0, insT:0, insR:0, insB:0, offX:0, offY:0, zoom:1,
+        inset: 0, cardW:null, cardH:null, cardAuto:true, insL:0, insT:0, insR:0, insB:0, offX:0, offY:0, zoom:1,
         dragging: null,
         step: 1,
         cellImages: null,
@@ -12644,6 +12644,7 @@ function openSheetImportOverlay(){
         <div id="sheet-rect-outline" style="position:absolute;border:2px solid #ffcc33;pointer-events:none;box-sizing:border-box;"></div>
         <div id="sheet-grid-lines"></div>
         <div id="sheet-handle-tl" class="sheet-handle" style="position:absolute;width:18px;height:18px;margin-left:-9px;margin-top:-9px;border-radius:50%;background:#ffcc33;border:2px solid #1a1a1a;cursor:grab;"></div>
+        <div id="sheet-handle-cs" class="sheet-handle" title="Kartengrösse: Ecke unten rechts der ersten Karte ziehen" style="position:absolute;width:18px;height:18px;margin-left:-9px;margin-top:-9px;border-radius:50%;background:#ff5050;border:2px solid #1a1a1a;cursor:grab;z-index:3;"></div>
         <div id="sheet-handle-br" class="sheet-handle" style="position:absolute;width:18px;height:18px;margin-left:-9px;margin-top:-9px;border-radius:50%;background:#ffcc33;border:2px solid #1a1a1a;cursor:grab;"></div>
       </div>
       </div>
@@ -12665,6 +12666,10 @@ function openSheetImportOverlay(){
   document.body.appendChild(overlay);
   const tlHandle = document.getElementById('sheet-handle-tl');
   const brHandle = document.getElementById('sheet-handle-br');
+  const csHandle = document.getElementById('sheet-handle-cs');
+  const onCsDown = e => { e.preventDefault(); if(sheetImportState) sheetImportState.dragging = 'cs'; };
+  csHandle.addEventListener('mousedown', onCsDown);
+  csHandle.addEventListener('touchstart', onCsDown, {passive:false});
   const onTlDown = e => { e.preventDefault(); if(sheetImportState) sheetImportState.dragging = 'tl'; };
   const onBrDown = e => { e.preventDefault(); if(sheetImportState) sheetImportState.dragging = 'br'; };
   tlHandle.addEventListener('mousedown', onTlDown);
@@ -12696,6 +12701,13 @@ function sheetContainerPointerMove(x, y){
   if(s.dragging === 'tl'){
     s.rect.left = Math.min(px, s.rect.right - MIN);
     s.rect.top = Math.min(py, s.rect.bottom - MIN);
+  } else if(s.dragging === 'cs'){
+    const rw = (s.rect.right - s.rect.left)/100*s.naturalW, rh = (s.rect.bottom - s.rect.top)/100*s.naturalH;
+    s.cardAuto = false;
+    s.cardW = Math.max(1, Math.min(rw/s.cols*1.0 + 0, Math.max(1,(px - s.rect.left)/100*s.naturalW)));
+    s.cardH = Math.max(1, Math.min(rh/s.rows*1.0 + 0, Math.max(1,(py - s.rect.top)/100*s.naturalH)));
+    s.cardW = Math.round(s.cardW*2)/2; s.cardH = Math.round(s.cardH*2)/2;
+    sheetSyncCardInputs(true);
   } else if(s.dragging === 'br'){
     s.rect.right = Math.max(px, s.rect.left + MIN);
     s.rect.bottom = Math.max(py, s.rect.top + MIN);
@@ -12764,18 +12776,18 @@ function sheetCardSizeFromGrid(){
   const s = sheetImportState; if(!s) return;
   s.cardW = Math.round((s.rect.right - s.rect.left)/100*s.naturalW/s.cols*2)/2;
   s.cardH = Math.round((s.rect.bottom - s.rect.top)/100*s.naturalH/s.rows*2)/2;
-  sheetSyncCardInputs(true); renderSheetOverlayVisuals();
+  s.cardAuto = true; sheetSyncCardInputs(true); renderSheetOverlayVisuals();
 }
 function sheetCardSizeRatio(){
   const s = sheetImportState; if(!s) return;
   if(!(s.cardW > 0)) sheetCardSizeFromGrid();
-  s.cardH = Math.round(s.cardW*1.4*2)/2;
+  s.cardH = Math.round(s.cardW*1.4*2)/2; s.cardAuto = false;
   sheetSyncCardInputs(true); renderSheetOverlayVisuals();
 }
 function updateSheetCardSize(){
   const s = sheetImportState; if(!s) return;
   const w = Number(document.getElementById('sheet-cardW').value), h = Number(document.getElementById('sheet-cardH').value);
-  s.cardW = w > 0 ? w : null; s.cardH = h > 0 ? h : null;
+  s.cardW = w > 0 ? w : null; s.cardH = h > 0 ? h : null; s.cardAuto = !(s.cardW > 0 && s.cardH > 0);
   renderSheetOverlayVisuals();
 }
 function sheetSyncCardInputs(force){
@@ -12859,6 +12871,9 @@ function renderSheetOverlayVisuals(){
   const outline = document.getElementById('sheet-rect-outline');
   if(tl){ tl.style.left = s.rect.left+'%'; tl.style.top = s.rect.top+'%'; }
   if(br){ br.style.left = s.rect.right+'%'; br.style.top = s.rect.bottom+'%'; }
+  if(s.cardAuto){ s.cardW = (s.rect.right - s.rect.left)/100*s.naturalW/s.cols; s.cardH = (s.rect.bottom - s.rect.top)/100*s.naturalH/s.rows; }
+  const cs = document.getElementById('sheet-handle-cs');
+  if(cs){ cs.style.left = (s.rect.left + s.cardW/s.naturalW*100)+'%'; cs.style.top = (s.rect.top + s.cardH/s.naturalH*100)+'%'; }
   // Digitale Eingabefelder (links/oben/rechts/unten) mit dem aktuellen Rechteck synchron halten —
   // auch wenn die Änderung gerade vom Ziehen der Griffe oder vom "An Bildrand ausrichten"-Button kam,
   // nicht nur von den Feldern selbst. document.activeElement-Check verhindert, dass ein Feld, in das
@@ -12896,7 +12911,24 @@ function renderSheetOverlayVisuals(){
     // schon ausserhalb dieser roten Linie liegt — erst dann ist der Zuschnitt wirklich randgenau,
     // ohne dass man das Gesamtrechteck (gelbe Griffe) selbst verschieben müsste.
     const cellW = w / s.cols, cellH = h / s.rows;
-    const hasCrop = (s.cardW > 0 || s.insL||s.insT||s.insR||s.insB||s.offX||s.offY);
+    // Doppelte Rasterlinien: pro Zwischenraum die rechte Kante der linken und die linke Kante der rechten Karte
+    {
+      const rw = (s.rect.right - s.rect.left), rh = (s.rect.bottom - s.rect.top);
+      const cwP = s.cardW/s.naturalW*100, chP = s.cardH/s.naturalH*100;
+      const gxP = s.cols>1 ? (rw - s.cols*cwP)/(s.cols-1) : 0, gyP = s.rows>1 ? (rh - s.rows*chP)/(s.rows-1) : 0;
+      const ln = (st) => `<div style="position:absolute;pointer-events:none;background:#ff5050;${st}"></div>`;
+      for(let c=0; c<s.cols; c++){
+        const x0 = s.rect.left + c*(cwP+gxP), x1 = x0 + cwP;
+        if(c>0) html += ln(`left:${x0}%;top:${s.rect.top}%;width:1px;height:${rh}%;`);
+        if(c<s.cols-1) html += ln(`left:${x1}%;top:${s.rect.top}%;width:1px;height:${rh}%;`);
+      }
+      for(let rI=0; rI<s.rows; rI++){
+        const y0 = s.rect.top + rI*(chP+gyP), y1 = y0 + chP;
+        if(rI>0) html += ln(`left:${s.rect.left}%;top:${y0}%;width:${rw}%;height:1px;`);
+        if(rI<s.rows-1) html += ln(`left:${s.rect.left}%;top:${y1}%;width:${rw}%;height:1px;`);
+      }
+    }
+    const hasCrop = (s.insL|| s.insL||s.insT||s.insR||s.insB||s.offX||s.offY);
     if(hasCrop){
       for(let rI=0; rI<s.rows; rI++){
         for(let c=0; c<s.cols; c++){
@@ -12923,6 +12955,7 @@ function sheetCellSrcRect(s, rowI, colI){
   const rectPxW = (s.rect.right - s.rect.left)/100 * s.naturalW;
   const rectPxH = (s.rect.bottom - s.rect.top)/100 * s.naturalH;
   let cellW = rectPxW / s.cols, cellH = rectPxH / s.rows;
+  if(s.cardAuto){ s.cardW = cellW; s.cardH = cellH; }
   let baseX = rectPxLeft + colI*cellW, baseY = rectPxTop + rowI*cellH;
   if(s.cardW > 0 && s.cardH > 0){
     // Feste Kartengrösse: erste/letzte Karte liegen bündig am gelben Rahmen, Abstände ergeben sich daraus
