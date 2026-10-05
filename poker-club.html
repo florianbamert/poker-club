@@ -2197,7 +2197,8 @@ function startClubSync(){
   clubSyncTimerId = setInterval(async () => {
     if(!currentClubId || document.hidden || clubSaveTimer) return;
     const ae = document.activeElement;
-    if(ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return;
+    // Nur beim Tippen in Textfeldern warten — ein angeklicktes Dropdown/Button behält den Fokus ewig und würde sonst jedes Update blockieren
+    if(ae && ((ae.tagName === 'TEXTAREA') || (ae.tagName === 'INPUT' && /^(text|number|search|email|tel|url|password|)$/i.test(ae.type || '')))) return;
     const modal = document.getElementById('modal-root');
     if(modal && modal.innerHTML.trim()) return;
     try{
