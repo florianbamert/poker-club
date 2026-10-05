@@ -2152,11 +2152,12 @@ async function enterClubByCode(code){
   if(clubErr || !club) return { ok:false, reason:'not_found' };
   const { data: membership } = await sb.from('club_memberships').select('role').eq('club_id', club.id).eq('user_id', currentUser.id).maybeSingle();
   if(membership){
-    const { data: row, error: dataErr } = await sb.from('club_data').select('data').eq('club_id', club.id).maybeSingle();
+    const { data: row, error: dataErr } = await sb.from('club_data').select('data,updated_at').eq('club_id', club.id).maybeSingle();
     if(dataErr || !row){ console.error('club_data load failed', dataErr); return { ok:false, reason:'data_missing', detail: dataErr ? dataErr.message : 'keine Daten' }; }
     currentCode = club.code;
     currentClubId = club.id;
     currentClub = row.data;
+    clubKnownUpdatedAt = row.updated_at || null;
     myRole = membership.role;
     return { ok:true, joined:true };
   }
@@ -2175,12 +2176,40 @@ async function quickEnterClub(code){
   await rememberClub(currentCode, currentClub.info.name);
   enterClubUI();
 }
+let clubKnownUpdatedAt = null;   // Zeitstempel der Club-Daten, die wir zuletzt geladen/gespeichert haben
+let clubSyncTimerId = null;
 async function reloadClubData(){
   if(!currentClubId) return;
-  const { data: row, error } = await sb.from('club_data').select('data').eq('club_id', currentClubId).maybeSingle();
-  if(!error && row) currentClub = row.data;
+  const { data: row, error } = await sb.from('club_data').select('data,updated_at').eq('club_id', currentClubId).maybeSingle();
+  if(!error && row){
+    currentClub = row.data;
+    clubKnownUpdatedAt = row.updated_at || clubKnownUpdatedAt;
+    ensureClubDefaults();
+    layoutTemplates = currentClub.tableLayouts;
+  }
   render();
 }
+// Änderungen anderer Admins (z.B. neues Kartendeck, Layout) holen: alle 20 s nur den Zeitstempel prüfen
+// und die Daten nur dann neu laden, wenn sie sich geändert haben. Nicht während eines ausstehenden
+// eigenen Speicherns, offener Dialoge oder Tipp-Eingaben, damit nichts überschrieben/unterbrochen wird.
+function startClubSync(){
+  stopClubSync();
+  clubSyncTimerId = setInterval(async () => {
+    if(!currentClubId || document.hidden || clubSaveTimer) return;
+    const ae = document.activeElement;
+    if(ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return;
+    const modal = document.getElementById('modal-root');
+    if(modal && modal.innerHTML.trim()) return;
+    try{
+      const { data: row, error } = await sb.from('club_data').select('updated_at').eq('club_id', currentClubId).maybeSingle();
+      if(error || !row || !row.updated_at) return;
+      if(clubKnownUpdatedAt && new Date(row.updated_at).getTime() <= new Date(clubKnownUpdatedAt).getTime()) return;
+      if(clubSaveTimer) return;
+      await reloadClubData();
+    }catch(e){ console.warn('club sync failed', e); }
+  }, 20000);
+}
+function stopClubSync(){ if(clubSyncTimerId){ clearInterval(clubSyncTimerId); clubSyncTimerId = null; } }
 let clubSaveTimer = null;
 function saveClubData(){
   // Bei jeder kleinen Aktion (Chip-Eingabe, Klick, etc.) wurde bisher SOFORT der komplette Club
@@ -2197,9 +2226,11 @@ function saveClubData(){
   clubSaveTimer = setTimeout(async () => {
     clubSaveTimer = null;
     try{
+      const savedAt = new Date().toISOString();
       const { error } = await sb.from('club_data')
-        .update({ data: currentClub, updated_at: new Date().toISOString() })
+        .update({ data: currentClub, updated_at: savedAt })
         .eq('club_id', currentClubId);
+      if(!error) clubKnownUpdatedAt = savedAt;
       if(error){
         console.error('club save failed', error);
         showToast('⚠️ Speichern fehlgeschlagen — bitte Seite neu laden und nochmal versuchen.');
@@ -2393,6 +2424,7 @@ function enterClubUI(){
   // darauf ändert also direkt den Club-Datensatz mit, ganz ohne Umweg über eine eigene Save-Funktion.
   layoutTemplates = currentClub.tableLayouts;
   loadSeatViewPrefs();
+  startClubSync();
   // Einmalige Migration (nur relevant für Clubs, die schon vor dieser Umstellung Layouts hatten):
   // früher lagen Table-Designer-Layouts global (app-weit, über alle Clubs hinweg geteilt) in
   // app_storage — siehe loadLegacyLayoutTemplates(). Läuft asynchron NACH deren Ladevorgang, damit
@@ -2422,6 +2454,7 @@ function enterClubUI(){
   resolvePendingInvite();
 }
 function leaveClub(){
+  stopClubSync();
   currentCode = null; currentClub = null; currentSessionId = null; currentClubId = null; myRole = null;
   layoutTemplates = []; // war Referenz auf currentClub.tableLayouts — beim Clubwechsel zurücksetzen
   seatViewCache = null;
