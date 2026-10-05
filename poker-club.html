@@ -6522,7 +6522,73 @@ function backupSectionHtml(){
         </label>` : `<span class="lede" style="font-size:12px;">Wiederherstellen ist nur sichtbar für die Rolle "App gestaltend".</span>`}
       </div>
       <div id="backup-status" style="margin-top:10px;font-size:12.5px;"></div>
+      ${isClubAdmin() ? `<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--paper-line);">
+        <div style="font-weight:700;font-size:13px;margin-bottom:4px;">📦 Club-Daten: ${(JSON.stringify(currentClub).length/1048576).toFixed(1)} MB</div>
+        <p class="lede" style="margin:0 0 8px;font-size:12px;">Zu grosse Club-Daten (über ca. 8 MB) lassen Speichern und Laden scheitern. Hier werden Avatar-Fotos und Layout-Bilder verkleinert — die Optik bleibt praktisch gleich.</p>
+        <button class="btn btn-secondary btn-sm" onclick="shrinkClubImages()">🗜 Bilder im Club verkleinern</button>
+        <div id="shrink-status" style="margin-top:8px;font-size:12.5px;"></div>
+      </div>` : ''}
     </div>`;
+}
+// Verkleinert alle grossen Bilder im Club-Datensatz (Avatare + Layout-Bilder). Transparente Bilder bleiben
+// transparent (WebP bzw. PNG), Fotos/Hintergründe werden JPEG.
+async function shrinkClubImages(){
+  if(!isClubAdmin()) return;
+  const status = document.getElementById('shrink-status');
+  const say = (t) => { if(status) status.textContent = t; };
+  const before = JSON.stringify(currentClub).length;
+  const MIN_BYTES = 120 * 1024;   // kleinere Bilder lassen wir in Ruhe
+  const hasAlpha = (img) => {
+    const c = document.createElement('canvas'); c.width = Math.min(img.naturalWidth, 64); c.height = Math.min(img.naturalHeight, 64);
+    const x = c.getContext('2d'); x.drawImage(img, 0, 0, c.width, c.height);
+    const d = x.getImageData(0, 0, c.width, c.height).data;
+    for(let i = 3; i < d.length; i += 4) if(d[i] < 250) return true;
+    return false;
+  };
+  const shrink = async (dataUrl, maxDim, quality) => {
+    if(!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image') || dataUrl.length < MIN_BYTES) return dataUrl;
+    const img = await loadImageAsync(dataUrl);
+    let w = img.naturalWidth, h = img.naturalHeight;
+    if(w > maxDim || h > maxDim){ const k = maxDim / Math.max(w, h); w = Math.round(w*k); h = Math.round(h*k); }
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    c.getContext('2d').drawImage(img, 0, 0, w, h);
+    let out;
+    if(hasAlpha(img)){
+      out = c.toDataURL('image/webp', quality);
+      if(!out.startsWith('data:image/webp')) out = c.toDataURL('image/png');   // z.B. Safari: kein WebP-Export
+    } else {
+      out = c.toDataURL('image/jpeg', quality);
+    }
+    return out.length < dataUrl.length ? out : dataUrl;
+  };
+  try{
+    ensureClubDefaults();
+    const avatars = currentClub.customAvatars || [];
+    for(let i = 0; i < avatars.length; i++){
+      say(`Avatare ${i+1}/${avatars.length} …`);
+      avatars[i].photo = await shrink(avatars[i].photo, 512, 0.82);
+    }
+    const layouts = currentClub.tableLayouts || [];
+    for(let i = 0; i < layouts.length; i++){
+      say(`Layout ${i+1}/${layouts.length} …`);
+      const l = layouts[i];
+      if(l.backgroundImage) l.backgroundImage = await shrink(l.backgroundImage, 1400, 0.8);
+      if(l.tableImage)      l.tableImage      = await shrink(l.tableImage, 1400, 0.8);
+      if(l.boxImage)        l.boxImage        = await shrink(l.boxImage, 700, 0.85);
+    }
+    const after = JSON.stringify(currentClub).length;
+    say(`Fertig: ${(before/1048576).toFixed(1)} MB → ${(after/1048576).toFixed(1)} MB. Speichere …`);
+    // sofort und mit Rückmeldung speichern (nicht im 600-ms-Sammler)
+    const savedAt = new Date().toISOString();
+    const { error } = await sb.from('club_data').update({ data: currentClub, updated_at: savedAt }).eq('club_id', currentClubId);
+    if(error){ say(`Verkleinert (${(after/1048576).toFixed(1)} MB), aber Speichern fehlgeschlagen: ${error.message}`); return; }
+    clubKnownUpdatedAt = savedAt;
+    say(`✅ Gespeichert: ${(before/1048576).toFixed(1)} MB → ${(after/1048576).toFixed(1)} MB.`);
+    render();
+  }catch(e){
+    console.error('shrinkClubImages failed', e);
+    say('⚠️ Verkleinern fehlgeschlagen: ' + (e && e.message ? e.message : e));
+  }
 }
 function exportClubBackup(){
   const payload = {
