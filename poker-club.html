@@ -12561,7 +12561,7 @@ function handleCardSheetUpload(input){
         rect: { left:0, top:0, right:100, bottom:100 },
         rows: 4,
         cols: 13,
-        inset: 0, insL:0, insT:0, insR:0, insB:0, offX:0, offY:0, zoom:1,
+        inset: 0, cardW:null, cardH:null, insL:0, insT:0, insR:0, insB:0, offX:0, offY:0, zoom:1,
         dragging: null,
         step: 1,
         cellImages: null,
@@ -12600,6 +12600,14 @@ function openSheetImportOverlay(){
         <button type="button" class="btn btn-secondary btn-sm" onclick="snapSheetRectToImageEdges()">📐 An Bildrand ausrichten</button>
       </div>
       <div style="margin-bottom:12px;padding:8px 10px;background:var(--paper);border:1px solid var(--paper-line);border-radius:8px;">
+        <div class="lede" style="margin:0 0 6px;font-weight:700;">1. <span style="color:#ffcc33;">Gelbes Raster</span> auf die äusseren Kartenränder legen (erste Karte oben links bis letzte Karte unten rechts). 2. Kartengrösse eintragen — die Zwischenräume werden automatisch berechnet.</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;margin-bottom:10px;">
+          <label style="display:flex;align-items:center;gap:6px;">Karte Breite <input type="number" min="1" step="0.5" id="sheet-cardW" style="width:80px;" oninput="updateSheetCardSize()"> px</label>
+          <label style="display:flex;align-items:center;gap:6px;">Höhe <input type="number" min="1" step="0.5" id="sheet-cardH" style="width:80px;" oninput="updateSheetCardSize()"> px</label>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="sheetCardSizeRatio()">Höhe aus Breite (5:7)</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="sheetCardSizeFromGrid()">= Rasterzelle</button>
+          <span id="sheet-gap-info" class="lede" style="margin:0;"></span>
+        </div>
         <div class="lede" style="margin:0 0 6px;font-weight:700;"><span style="color:#ff5050;">Rote Linie</span> = tatsächlicher Zuschnitt jeder Karte (% der Zelle)</div>
         <div style="display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;">
           ${[['L','Links'],['T','Oben'],['R','Rechts'],['B','Unten']].map(([k,l])=>`<label style="display:flex;align-items:center;gap:6px;">${l} <input type="range" min="0" max="45" step="0.25" id="sheet-ins${k}" value="${s['ins'+k]||0}" style="width:110px;" oninput="updateSheetInset()"> <input type="number" min="0" max="45" step="0.25" id="sheet-ins${k}-n" value="${s['ins'+k]||0}" style="width:60px;" oninput="updateSheetInset('${k}')">%</label>`).join('')}
@@ -12609,7 +12617,7 @@ function openSheetImportOverlay(){
           <label style="display:flex;align-items:center;gap:6px;">↕ <input type="range" min="-30" max="30" step="0.25" id="sheet-offY" value="${s.offY||0}" style="width:130px;" oninput="updateSheetInset()"> <span id="sheet-offY-v">${s.offY||0}</span>%</label>
           <button type="button" class="btn btn-secondary btn-sm" onclick="resetSheetInset()">Zurücksetzen</button>
         </div>
-        <div class="lede" style="margin:6px 0 0;font-size:12px;">Seiten einzeln abschneiden, um nur einen Teil der Karte zu nehmen. «Verschieben» rückt den Ausschnitt ohne seine Grösse zu ändern — er bleibt immer im Bild, es entsteht kein schwarzer Rand. Die <span style="color:#ffcc33;font-weight:700;">gelbe</span> Linie zeigt nur die Rasteraufteilung.</div>
+        <div class="lede" style="margin:6px 0 0;font-size:12px;">Optional: Seiten einzeln abschneiden, um nur einen Teil der Karte zu nehmen (relativ zur Kartengrösse oben). «Verschieben» rückt den Ausschnitt ohne seine Grösse zu ändern — er bleibt immer im Bild, es entsteht kein schwarzer Rand. Die <span style="color:#ffcc33;font-weight:700;">gelbe</span> Linie zeigt nur die Rasteraufteilung.</div>
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:8px;">
         <span class="lede" style="margin:0;font-weight:700;">🔍 Zoom:</span>
@@ -12752,6 +12760,38 @@ function updateSheetInset(fromNum){
   if(ox) ox.textContent = s.offX; if(oy) oy.textContent = s.offY;
   renderSheetOverlayVisuals();
 }
+function sheetCardSizeFromGrid(){
+  const s = sheetImportState; if(!s) return;
+  s.cardW = Math.round((s.rect.right - s.rect.left)/100*s.naturalW/s.cols*2)/2;
+  s.cardH = Math.round((s.rect.bottom - s.rect.top)/100*s.naturalH/s.rows*2)/2;
+  sheetSyncCardInputs(true); renderSheetOverlayVisuals();
+}
+function sheetCardSizeRatio(){
+  const s = sheetImportState; if(!s) return;
+  if(!(s.cardW > 0)) sheetCardSizeFromGrid();
+  s.cardH = Math.round(s.cardW*1.4*2)/2;
+  sheetSyncCardInputs(true); renderSheetOverlayVisuals();
+}
+function updateSheetCardSize(){
+  const s = sheetImportState; if(!s) return;
+  const w = Number(document.getElementById('sheet-cardW').value), h = Number(document.getElementById('sheet-cardH').value);
+  s.cardW = w > 0 ? w : null; s.cardH = h > 0 ? h : null;
+  renderSheetOverlayVisuals();
+}
+function sheetSyncCardInputs(force){
+  const s = sheetImportState; if(!s) return;
+  const a = document.getElementById('sheet-cardW'), b = document.getElementById('sheet-cardH');
+  if(a && (force || a !== document.activeElement)) a.value = s.cardW || '';
+  if(b && (force || b !== document.activeElement)) b.value = s.cardH || '';
+  const info = document.getElementById('sheet-gap-info');
+  if(info){
+    const rw = (s.rect.right - s.rect.left)/100*s.naturalW, rh = (s.rect.bottom - s.rect.top)/100*s.naturalH;
+    if(s.cardW > 0 && s.cardH > 0){
+      const gx = s.cols > 1 ? (rw - s.cols*s.cardW)/(s.cols-1) : 0, gy = s.rows > 1 ? (rh - s.rows*s.cardH)/(s.rows-1) : 0;
+      info.innerHTML = `Abstand automatisch: ↔ <b>${gx.toFixed(1)}</b> px, ↕ <b>${gy.toFixed(1)}</b> px` + ((gx<0||gy<0)?' <span style="color:#ff5050;">(negativ = Karten überlappen, Grösse zu gross)</span>':'');
+    } else info.textContent = 'Leer = Rasterzellen gleich gross (ohne Abstände)';
+  }
+}
 function resetSheetInset(){
   const s = sheetImportState; if(!s) return;
   s.insL = s.insT = s.insR = s.insB = 0; s.offX = s.offY = 0;
@@ -12856,7 +12896,7 @@ function renderSheetOverlayVisuals(){
     // schon ausserhalb dieser roten Linie liegt — erst dann ist der Zuschnitt wirklich randgenau,
     // ohne dass man das Gesamtrechteck (gelbe Griffe) selbst verschieben müsste.
     const cellW = w / s.cols, cellH = h / s.rows;
-    const hasCrop = (s.insL||s.insT||s.insR||s.insB||s.offX||s.offY);
+    const hasCrop = (s.cardW > 0 || s.insL||s.insT||s.insR||s.insB||s.offX||s.offY);
     if(hasCrop){
       for(let rI=0; rI<s.rows; rI++){
         for(let c=0; c<s.cols; c++){
@@ -12869,6 +12909,7 @@ function renderSheetOverlayVisuals(){
     }
     linesEl.innerHTML = html;
   }
+  sheetSyncCardInputs();
   updateSheetPreviewThumbs();
 }
 // Zentrale Stelle für die Zuschnitt-Geometrie EINER Zelle (in echten Bildpixeln), inkl. "Rand
@@ -12881,11 +12922,19 @@ function sheetCellSrcRect(s, rowI, colI){
   const rectPxTop = s.rect.top/100 * s.naturalH;
   const rectPxW = (s.rect.right - s.rect.left)/100 * s.naturalW;
   const rectPxH = (s.rect.bottom - s.rect.top)/100 * s.naturalH;
-  const cellW = rectPxW / s.cols, cellH = rectPxH / s.rows;
+  let cellW = rectPxW / s.cols, cellH = rectPxH / s.rows;
+  let baseX = rectPxLeft + colI*cellW, baseY = rectPxTop + rowI*cellH;
+  if(s.cardW > 0 && s.cardH > 0){
+    // Feste Kartengrösse: erste/letzte Karte liegen bündig am gelben Rahmen, Abstände ergeben sich daraus
+    const gapX = s.cols > 1 ? (rectPxW - s.cols*s.cardW)/(s.cols-1) : 0;
+    const gapY = s.rows > 1 ? (rectPxH - s.rows*s.cardH)/(s.rows-1) : 0;
+    baseX = rectPxLeft + colI*(s.cardW + gapX); baseY = rectPxTop + rowI*(s.cardH + gapY);
+    cellW = s.cardW; cellH = s.cardH;
+  }
   const iL = s.insL||0, iT = s.insT||0, iR = s.insR||0, iB = s.insB||0;
   let sw = cellW * (100 - iL - iR)/100, sh = cellH * (100 - iT - iB)/100;
-  let sx = rectPxLeft + colI*cellW + cellW*(iL + (s.offX||0))/100;
-  let sy = rectPxTop + rowI*cellH + cellH*(iT + (s.offY||0))/100;
+  let sx = baseX + cellW*(iL + (s.offX||0))/100;
+  let sy = baseY + cellH*(iT + (s.offY||0))/100;
   // Ausschnitt bleibt immer im Bild: lieber verschieben als über den Rand hinaus lesen (kein schwarzer Rand)
   sw = Math.min(sw, s.naturalW); sh = Math.min(sh, s.naturalH);
   sx = Math.max(0, Math.min(s.naturalW - sw, sx));
