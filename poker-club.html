@@ -1470,7 +1470,7 @@ async function handleInviteLinkIfPresent(){
   if(!joincode){ renderMyClubsList(); return; }
   if(invite) localStorage.setItem('chipmate_pending_invite_' + joincode, invite);
   const result = await enterClubByCode(joincode);
-  if(!result.ok){ showToast('Einladungslink ungültig — Club nicht gefunden.'); renderMyClubsList(); return; }
+  if(!result.ok){ showToast(result.reason==='data_missing' ? ('Club-Daten konnten nicht geladen werden: ' + result.detail) : 'Einladungslink ungültig — Club nicht gefunden.'); renderMyClubsList(); return; }
   if(!result.joined){
     showToast(`Beitrittsanfrage für "${result.clubName}" gesendet — wartet auf Freischaltung durch einen Admin. Öffne die App danach einfach nochmal normal.`);
     renderMyClubsList();
@@ -2153,7 +2153,7 @@ async function enterClubByCode(code){
   const { data: membership } = await sb.from('club_memberships').select('role').eq('club_id', club.id).eq('user_id', currentUser.id).maybeSingle();
   if(membership){
     const { data: row, error: dataErr } = await sb.from('club_data').select('data').eq('club_id', club.id).maybeSingle();
-    if(dataErr || !row) return { ok:false, reason:'data_missing' };
+    if(dataErr || !row){ console.error('club_data load failed', dataErr); return { ok:false, reason:'data_missing', detail: dataErr ? dataErr.message : 'keine Daten' }; }
     currentCode = club.code;
     currentClubId = club.id;
     currentClub = row.data;
@@ -2170,7 +2170,7 @@ async function enterClubByCode(code){
 }
 async function quickEnterClub(code){
   const result = await enterClubByCode(code);
-  if(!result.ok){ showToast(t('err_club_not_found')); return; }
+  if(!result.ok){ showToast(result.reason==='data_missing' ? ('Club-Daten konnten nicht geladen werden: ' + result.detail) : t('err_club_not_found')); return; }
   if(!result.joined){ showToast('Beitrittsanfrage bereits unterwegs — warte auf Freigabe durch einen Club-Admin.'); return; }
   await rememberClub(currentCode, currentClub.info.name);
   enterClubUI();
@@ -2244,6 +2244,11 @@ function ensureClubDefaults(){
   if(!currentClub.customCardDeck) currentClub.customCardDeck = { back:null, cards:{} };
   if(!currentClub.customCardDeck.cards) currentClub.customCardDeck.cards = {};
   if(!currentClub.cardDeckTemplates) currentClub.cardDeckTemplates = [];
+  // Das aktive Deck steckt schon in seiner Vorlage — nicht zusätzlich nochmal als Kopie speichern
+  // (verdoppelte die Club-Daten um mehrere MB und liess das Laden des Clubs scheitern)
+  if(currentClub.activeCardDeckTemplateId && currentClub.cardDeckTemplates.some(t => t.id === currentClub.activeCardDeckTemplateId) && Object.keys(currentClub.customCardDeck.cards).length){
+    currentClub.customCardDeck.cards = {};
+  }
   // Table-Designer-Layouts: leben seit kurzem HIER (im club_data-JSON, wie Logos/Avatare/
   // Kartendecks auch), statt wie zuvor global app-weit in der generischen app_storage-Tabelle —
   // dort waren sie fälschlich über alle Clubs hinweg sichtbar (kein club_id-Bezug). Siehe
@@ -2370,7 +2375,7 @@ async function submitJoinClub(){
   const errBox = document.getElementById('join-error');
   if(!code){ errBox.innerHTML = `<div class="error-msg">${t('err_need_code')}</div>`; return; }
   const result = await enterClubByCode(code);
-  if(!result.ok){ errBox.innerHTML = `<div class="error-msg">${t('err_club_not_found')}</div>`; return; }
+  if(!result.ok){ errBox.innerHTML = `<div class="error-msg">${result.reason==='data_missing' ? ('Club-Daten konnten nicht geladen werden: ' + escapeHtml(result.detail||'')) : t('err_club_not_found')}</div>`; return; }
   closeModal();
   if(!result.joined){
     showToast(`Beitrittsanfrage an "${result.clubName}" gesendet — ein Admin muss sie noch freigeben.`);
@@ -10083,8 +10088,18 @@ async function submitRunItMultiple(sessionId){
   checkForBustedPlayers(sessionId);
 }
 
+function activeDeckCards(){
+  if(!currentClub) return null;
+  const id = currentClub.activeCardDeckTemplateId;
+  if(id && currentClub.cardDeckTemplates){
+    const tpl = currentClub.cardDeckTemplates.find(t => t.id === id);
+    if(tpl && tpl.cards) return tpl.cards;
+  }
+  return currentClub.customCardDeck ? currentClub.customCardDeck.cards : null;
+}
 function customCardImageFor(code){
-  return (currentClub && currentClub.customCardDeck && currentClub.customCardDeck.cards) ? currentClub.customCardDeck.cards[code] : null;
+  const cards = activeDeckCards();
+  return cards ? cards[code] : null;
 }
 // "display:inline-block;aspect-ratio:5/7" bei eigenen Kartenbildern: .board-card ist sonst ein
 // reines <span> (inline), dessen Höhe nur von Schrift+Padding kommt — viel zu flach für ein
@@ -12030,7 +12045,7 @@ function cardDesignSectionHtml(){
 function customCardDeckSectionHtml(){
   ensureClubDefaults();
   const deck = currentClub.customCardDeck;
-  const cardCount = Object.keys(deck.cards||{}).length;
+  const cardCount = Object.keys(activeDeckCards()||{}).length;
   const previewRanks = ['A','K','Q','J','T','9','8','7','6','5','4','3','2'];
   const previewSuits = ['♠','♥','♦','♣'];
   const previewGridHtml = cardCount ? `
@@ -12079,7 +12094,8 @@ function customCardDeckSectionHtml(){
           🂠 Kartenrückseite hochladen
           <input type="file" accept="image/*" style="display:none;" onchange="handleCardBackUpload(this)">
         </label>
-        ${cardCount || deck.back ? `<button class="btn btn-secondary btn-sm" style="color:var(--red);" onclick="removeCustomCardDeck()">Aktives Deck entfernen</button>` : ''}
+        ${cardCount ? `<button class="btn btn-secondary btn-sm" onclick="useStandardCardDeck()" title="Deaktiviert nur das Bilder-Deck — gespeicherte Vorlagen bleiben erhalten">🃏 Standardkarten verwenden</button>` : ''}
+        ${deck.back ? `<button class="btn btn-secondary btn-sm" style="color:var(--red);" onclick="removeCustomCardBack()">Rückseite entfernen</button>` : ''}
       </div>
       ${templatesListHtml}
       <p class="lede" style="margin-top:10px;font-size:11.5px;">Tipp für die KI-Anfrage: ein flaches 2D-Sprite-Sheet verlangen, Karten gleich gross und mit gleichmässigen Abständen angeordnet (z.B. "13 columns × 4 rows, uniform card size and spacing, sorted by suit then rank") — das macht die Ausrichtung im nächsten Schritt einfacher.</p>
@@ -12090,7 +12106,7 @@ function activateCardDeckTemplate(id){
   ensureClubDefaults();
   const tpl = currentClub.cardDeckTemplates.find(t => t.id === id);
   if(!tpl) return;
-  currentClub.customCardDeck.cards = {...tpl.cards};
+  currentClub.customCardDeck.cards = {};
   currentClub.activeCardDeckTemplateId = tpl.id;
   saveClubData();
   render();
@@ -12132,14 +12148,29 @@ function handleCardBackUpload(input){
   }).catch(() => showToast('Datei konnte nicht gelesen werden.'));
   input.value = '';
 }
-function removeCustomCardDeck(){
+// Wechselt zurück zu den Standardkarten (Farben) — nichts wird gelöscht, Vorlagen bleiben und lassen
+// sich jederzeit wieder aktivieren.
+function useStandardCardDeck(){
   if(!isClubAdmin()) return;
-  if(!confirm('Eigenes Kartendeck wirklich entfernen? Die Standard-Farben werden dann wieder verwendet.')) return;
   ensureClubDefaults();
-  currentClub.customCardDeck = { back:null, cards:{} };
+  const legacy = currentClub.customCardDeck.cards || {};
+  // Altbestand ohne Vorlage: zuerst als Vorlage sichern, damit das Deck nicht verloren geht
+  if(!currentClub.activeCardDeckTemplateId && Object.keys(legacy).length){
+    currentClub.cardDeckTemplates.push({ id: uid(), name: 'Bisheriges Deck', cards: {...legacy} });
+  }
+  currentClub.customCardDeck.cards = {};
+  currentClub.activeCardDeckTemplateId = null;
   saveClubData();
   render();
-  showToast('Eigenes Kartendeck entfernt.');
+  showToast('Standardkarten aktiv. Deine Deck-Vorlagen bleiben gespeichert.');
+}
+function removeCustomCardBack(){
+  if(!isClubAdmin()) return;
+  ensureClubDefaults();
+  currentClub.customCardDeck.back = null;
+  saveClubData();
+  render();
+  showToast('Kartenrückseite entfernt.');
 }
 
 // ===== Sprite-Sheet-Import für eigenes Kartendeck =====
@@ -12639,7 +12670,7 @@ function confirmSaveCardDeckTemplate(){
   ensureClubDefaults();
   const tpl = { id: uid(), name, cards: s.pendingCards };
   currentClub.cardDeckTemplates.push(tpl);
-  currentClub.customCardDeck.cards = {...tpl.cards};
+  currentClub.customCardDeck.cards = {};
   currentClub.activeCardDeckTemplateId = tpl.id;
   saveClubData();
   document.getElementById('modal-root').innerHTML = '';
