@@ -655,6 +655,7 @@ function cleanupOnlineChannels(){
   if(onlineSeatPollId){ clearInterval(onlineSeatPollId); onlineSeatPollId = null; }
   if(onlinePublicChannel){ sb.removeChannel(onlinePublicChannel); onlinePublicChannel = null; }
   if(onlinePrivateChannel){ sb.removeChannel(onlinePrivateChannel); onlinePrivateChannel = null; }
+  onlinePrivateChannelSeat = null;
 }
 
 function resetOnlineTableState(){
@@ -830,6 +831,7 @@ async function refreshOnlineTableAndSeat(){
   onlineMySeat = mine ? mine.seat_no : null;
   const t = onlineTables.find(x => x.id === currentOnlineTableId);
   if(t) t.seats = (seats||[]).sort((a,b) => a.seat_no - b.seat_no);
+  ensureOnlinePrivateChannel();
   if(onlineMySeat != null){
     const { data: pub } = await sb.rpc('get_public_hand_state', { p_table_id: currentOnlineTableId });
     onlineHandState = pub || null;
@@ -845,11 +847,17 @@ function subscribeOnlineChannels(){
   // Sitzbelegung ist nicht per Realtime verbunden → alle 3 s nachsehen, ob jemand Platz genommen/aufgestanden ist
   const seatSig = (arr) => (arr||[]).map(x => `${x.seat_no}:${x.user_id}:${x.stack}`).sort().join('|');
   onlineSeatPollId = setInterval(async () => {
-    if(currentOnlineTableId !== tableId || document.hidden) return;
+    if(currentOnlineTableId !== tableId || document.hidden || onlineBusy) return;
     const { data: seats } = await sb.from('online_seats').select('seat_no,user_id,stack').eq('table_id', tableId);
     if(currentOnlineTableId !== tableId || !seats) return;
     const t = onlineTables.find(x => x.id === tableId);
-    if(seatSig(seats) !== seatSig(t && t.seats)) await refreshOnlineTableAndSeat();
+    if(seatSig(seats) !== seatSig(t && t.seats)){ await refreshOnlineTableAndSeat(); return; }
+    // Sicherheitsnetz, falls ein Broadcast verpasst wurde (z.B. erst nach Hinsetzen abonniert): Handstatus abgleichen
+    if(onlineMySeat != null){
+      const { data: pub } = await sb.rpc('get_public_hand_state', { p_table_id: tableId });
+      const sig = (h) => h ? `${h.hand_no}|${h.phase}|${h.current_seat}|${h.pot}|${JSON.stringify(h.bets||{})}|${(h.board||[]).length}` : '';
+      if(currentOnlineTableId === tableId && sig(pub) !== sig(onlineHandState)){ await refreshOnlineTableAndSeat(); }
+    }
   }, 3000);
   onlinePublicChannel = sb.channel(`table:${tableId}:public`)
     .on('broadcast', { event: 'state' }, (msg) => {
@@ -867,15 +875,24 @@ function subscribeOnlineChannels(){
       render();
     })
     .subscribe();
-  if(onlineMySeat != null){
-    onlinePrivateChannel = sb.channel(`table:${tableId}:seat:${onlineMySeat}`, { config: { private: true } })
-      .on('broadcast', { event: 'hole_cards' }, (msg) => {
-        if(currentOnlineTableId !== tableId) return;
-        onlineMyHoleCards = msg.payload.cards;
-        render();
-      })
-      .subscribe();
-  }
+  ensureOnlinePrivateChannel();
+}
+
+// Privater Hole-Card-Kanal: wird nach dem Hinsetzen nachträglich abonniert (nicht nur beim Öffnen des Tisches)
+let onlinePrivateChannelSeat = null;
+function ensureOnlinePrivateChannel(){
+  const tableId = currentOnlineTableId;
+  if(onlineMySeat == null || !tableId) return;
+  if(onlinePrivateChannel && onlinePrivateChannelSeat === onlineMySeat) return;
+  if(onlinePrivateChannel){ sb.removeChannel(onlinePrivateChannel); onlinePrivateChannel = null; }
+  onlinePrivateChannelSeat = onlineMySeat;
+  onlinePrivateChannel = sb.channel(`table:${tableId}:seat:${onlineMySeat}`, { config: { private: true } })
+    .on('broadcast', { event: 'hole_cards' }, (msg) => {
+      if(currentOnlineTableId !== tableId) return;
+      onlineMyHoleCards = msg.payload.cards;
+      render();
+    })
+    .subscribe();
 }
 
 async function takeOnlineSeat(seatNo){
