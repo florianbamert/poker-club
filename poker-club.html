@@ -717,23 +717,41 @@ function openNewOnlineTableModal(){
     <div class="modal-backdrop" onclick="if(event.target===this) closeModal()">
       <div class="modal">
         <h2>Neuer Online-Tisch</h2>
-        <p class="hint">Das automatische Karten-Austeilen (Dealing, Setzrunden, Showdown) funktioniert für 2 bis 10 Sitze.</p>
+        <p class="hint">Cash Game live gegeneinander spielen, das Haus verteilt die Karten (2 bis 10 Sitze).</p>
+        <div class="field"><label>Sitzplätze</label>
+          <select id="ot-seatcount">
+            <option value="2" selected>Heads-up (2)</option>
+            <option value="6">6-Max</option>
+            <option value="10">10-Max</option>
+          </select>
+        </div>
         <div class="field-row">
-          <div class="field"><label>Sitzplätze</label>
-            <select id="ot-seatcount">
-              <option value="2" selected>Heads-up (2)</option>
-              <option value="6">6-Max</option>
-              <option value="10">10-Max</option>
+          <div class="field"><label>🔴 Chipset <span class="sublabel">${t('sublabel_optional')}</span></label>
+            <select id="ot-chipset">
+              <option value="">— keins —</option>
+              ${(currentClub.chipProfiles||[]).filter(cp => cp.type==='cash').map(cp => `<option value="${cp.id}">${escapeHtml(cp.name || (formatMoney(cp.sb)+' / '+formatMoney(cp.bb)))}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><label>🎯 Bet-Raster <span class="sublabel">${t('sublabel_optional')}</span></label>
+            <select id="ot-betgrid">
+              <option value="">— Standard (Numblock) —</option>
+              ${(currentClub.betGridProfiles||[]).filter(bg => bg.type==='cash').map(bg => `<option value="${bg.id}">${escapeHtml(bg.name)} (SB ${formatMoney(bg.targetSb||0)})</option>`).join('')}
             </select>
           </div>
         </div>
         <div class="field-row">
-          <div class="field"><label>Small Blind</label><input id="ot-sb" type="number" min="0" step="0.5" value="0.5"></div>
-          <div class="field"><label>Big Blind</label><input id="ot-bb" type="number" min="0" step="0.5" value="1"></div>
+          <div class="field"><label>${t('label_sb')}</label><input id="ot-sb" type="number" min="0" step="0.05" value="0.5" placeholder="${t('placeholder_amount')}"></div>
+          <div class="field"><label>${t('label_bb')}</label><input id="ot-bb" type="number" min="0" step="0.05" value="1" placeholder="${t('placeholder_amount')}"></div>
         </div>
-        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
-          <button class="btn btn-secondary btn-sm" onclick="closeModal()">${t('btn_cancel')}</button>
-          <button class="btn btn-primary btn-sm" onclick="createOnlineTable()">${t('btn_create')}</button>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;">
+          <label style="display:flex;align-items:center;gap:8px;font-weight:400;">
+            <input type="checkbox" id="ot-seven-deuce" style="width:16px;height:16px;">🐍 7-2 Game (2 BB Bounty für 7-2-Gewinner)
+          </label>
+        </div>
+        <div class="field"><label>${t('label_notes_optional')} <span class="sublabel">${t('sublabel_optional')}</span></label><textarea id="ot-notes" placeholder="${t('placeholder_notes')}"></textarea></div>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" onclick="closeModal()">${t('btn_cancel')}</button>
+          <button class="btn btn-primary" onclick="createOnlineTable()">${t('btn_create')}</button>
         </div>
       </div>
     </div>`;
@@ -743,8 +761,20 @@ async function createOnlineTable(){
   const sb_ = parseFloat(document.getElementById('ot-sb').value);
   const bb_ = parseFloat(document.getElementById('ot-bb').value);
   const seatCount = parseInt(document.getElementById('ot-seatcount').value, 10);
-  if(!(sb_ > 0) || !(bb_ > sb_)){ showToast('Big Blind muss grösser als Small Blind sein.'); return; }
-  const { error } = await sb.from('online_tables').insert({ club_id: currentClubId, small_blind: sb_, big_blind: bb_, seat_count: seatCount });
+  // SB = BB ist erlaubt (z.B. 0.25/0.25); nur BB < SB ist sinnlos
+  if(!(sb_ > 0) || !(bb_ > 0) || bb_ < sb_){ showToast('Big Blind darf nicht kleiner als Small Blind sein.'); return; }
+  const options = {
+    chipProfileId: document.getElementById('ot-chipset').value || null,
+    betGridId: document.getElementById('ot-betgrid').value || null,
+    sevenDeuceGame: document.getElementById('ot-seven-deuce').checked,
+    notes: document.getElementById('ot-notes').value.trim()
+  };
+  const row = { club_id: currentClubId, small_blind: sb_, big_blind: bb_, seat_count: seatCount };
+  let { error } = await sb.from('online_tables').insert({ ...row, options });
+  if(error && /options/i.test(error.message || '')){
+    // Spalte "options" fehlt noch (chipmate_online_table_options.sql nicht ausgeführt) → ohne Zusatzoptionen anlegen
+    ({ error } = await sb.from('online_tables').insert(row));
+  }
   if(error){ showToast('Fehler: ' + error.message); return; }
   closeModal();
   onlineLobbyLoaded = false;
