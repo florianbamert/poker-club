@@ -1851,24 +1851,41 @@ async function saveIndex(list){
   try{ await window.storage.set('clubs-index', JSON.stringify(list), true); }
   catch(e){ console.error('index save failed', e); }
 }
-async function getMyClubs(){
-  try{ const r = await window.storage.get('my-clubs', false); return r ? JSON.parse(r.value) : []; }
-  catch(e){ return []; }
+// "Meine Clubs" kommt jetzt direkt aus den echten Mitgliedschaften (club_memberships) der
+// eingeloggten Person — nicht mehr aus der generischen app_storage-Tabelle, wo ein einziger
+// Eintrag für ALLE Nutzer der App galt und von anderen überschrieben werden konnte.
+// "Aus der Liste entfernen" blendet einen Club nur auf diesem Gerät aus (localStorage, pro User).
+function hiddenClubsKey(){ return 'chipmate_hidden_clubs_' + (currentUser ? currentUser.id : ''); }
+function getHiddenClubs(){
+  try{ return JSON.parse(localStorage.getItem(hiddenClubsKey()) || '[]'); }catch(e){ return []; }
 }
-async function saveMyClubs(list){
-  try{ await window.storage.set('my-clubs', JSON.stringify(list), false); }
-  catch(e){ console.error('my-clubs save failed', e); }
+function setHiddenClubs(list){
+  try{ localStorage.setItem(hiddenClubsKey(), JSON.stringify(list)); }catch(e){}
+}
+async function getMyClubs(){
+  if(!currentUser) return [];
+  try{
+    const { data, error } = await sb.from('club_memberships')
+      .select('created_at, clubs(id,name,code)')
+      .eq('user_id', currentUser.id)
+      .order('created_at', { ascending:false });
+    if(error || !data) return [];
+    const hidden = getHiddenClubs();
+    return data
+      .filter(m => m.clubs && !hidden.includes(m.clubs.code))
+      .map(m => ({ code: m.clubs.code, name: m.clubs.name }));
+  }catch(e){ return []; }
 }
 async function rememberClub(code, name){
-  const list = await getMyClubs();
-  const filtered = list.filter(c => c.code !== code);
-  filtered.unshift({ code, name });
-  await saveMyClubs(filtered.slice(0, 12));
+  // Nur noch ein "wieder einblenden", falls der Club zuvor auf diesem Gerät ausgeblendet wurde.
+  const hidden = getHiddenClubs();
+  if(hidden.includes(code)) setHiddenClubs(hidden.filter(c => c !== code));
 }
 async function forgetClub(code, ev){
   if(ev) ev.stopPropagation();
-  const list = await getMyClubs();
-  await saveMyClubs(list.filter(c => c.code !== code));
+  const hidden = getHiddenClubs();
+  if(!hidden.includes(code)) hidden.push(code);
+  setHiddenClubs(hidden);
   renderMyClubsList();
 }
 async function renderMyClubsList(){
