@@ -449,6 +449,22 @@
   .amount-btn.selected{ background:var(--felt-dark); border-color:var(--felt-dark); color:#fff; }
   .action-disabled{ opacity:.4; color:var(--ink-soft) !important; background:var(--paper) !important; border-color:var(--paper-line) !important; cursor:not-allowed; }
   .action-disabled .x-mark{ color:var(--red); font-weight:900; margin-left:4px; }
+
+  /* Sprechblase mit der letzten Aktion am Online-Tisch */
+  .action-bubble{ position:absolute; z-index:30; transform:translate(-50%, calc(-50% - 6.5cqw)); padding:0.45cqw 1.3cqw; border-radius:1.6cqw; background:#fff; color:#1a1a1a; font-weight:800; font-size:1.7cqw; white-space:nowrap; box-shadow:0 0.3cqw 1.2cqw rgba(0,0,0,.45); pointer-events:none; animation:abPop 2.6s ease-out both; }
+  .action-bubble::after{ content:''; position:absolute; left:50%; bottom:-0.7cqw; width:1.2cqw; height:1.2cqw; background:inherit; transform:translateX(-50%) rotate(45deg); border-radius:0 0 0.3cqw 0; }
+  .action-bubble.ab-fold{ background:#d9d6cd; color:#555; }
+  .action-bubble.ab-check{ background:#e4f1e4; color:#1d5e2e; }
+  .action-bubble.ab-call{ background:#d6ecf7; color:#0f4a6e; }
+  .action-bubble.ab-raise{ background:#ffe3c2; color:#8a3b00; }
+  .action-bubble.ab-allin{ background:#e5463d; color:#fff; }
+  @keyframes abPop{
+    0%{ opacity:0; transform:translate(-50%, calc(-50% - 4cqw)) scale(.3); }
+    10%{ opacity:1; transform:translate(-50%, calc(-50% - 6.5cqw)) scale(1.18); }
+    18%{ transform:translate(-50%, calc(-50% - 6.5cqw)) scale(1); }
+    82%{ opacity:1; transform:translate(-50%, calc(-50% - 6.5cqw)) scale(1); }
+    100%{ opacity:0; transform:translate(-50%, calc(-50% - 8.5cqw)) scale(.95); }
+  }
   .pot-center{ position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); text-align:center; z-index:1; }
   .board-center{ position:absolute; top:38%; left:50%; transform:translate(-50%,-50%); text-align:center; z-index:1; }
   .pot-center .amt{ font-family:'Fraunces',serif; font-size:1.3cqw; font-weight:700; color:#fff; text-shadow:0 1px 3px rgba(0,0,0,.6); margin-top:2px; }
@@ -772,10 +788,16 @@ async function createOnlineTable(){
     notes: document.getElementById('ot-notes').value.trim()
   };
   const row = { club_id: currentClubId, small_blind: sb_, big_blind: bb_, seat_count: seatCount };
-  let { error } = await sb.from('online_tables').insert({ ...row, options });
+  let { data: created, error } = await sb.from('online_tables').insert({ ...row, options }).select('id').single();
   if(error && /options/i.test(error.message || '')){
-    // Spalte "options" fehlt noch (chipmate_online_table_options.sql nicht ausgeführt) → ohne Zusatzoptionen anlegen
-    ({ error } = await sb.from('online_tables').insert(row));
+    // Spalte "options" fehlt (chipmate_online_table_options.sql nicht ausgeführt) → Optionen im Club ablegen
+    ({ data: created, error } = await sb.from('online_tables').insert(row).select('id').single());
+    if(!error && created){
+      ensureClubDefaults();
+      if(!currentClub.onlineTableOptions) currentClub.onlineTableOptions = {};
+      currentClub.onlineTableOptions[created.id] = options;
+      saveClubData();
+    }
   }
   if(error){ showToast('Fehler: ' + error.message); return; }
   closeModal();
@@ -842,24 +864,45 @@ async function refreshOnlineTableAndSeat(){
   render();
 }
 
-function subscribeOnlineChannels(){
-  cleanupOnlineChannels();
-  const tableId = currentOnlineTableId;
-  // Sitzbelegung ist nicht per Realtime verbunden → alle 3 s nachsehen, ob jemand Platz genommen/aufgestanden ist
-  const seatSig = (arr) => (arr||[]).map(x => `${x.seat_no}:${x.user_id}:${x.stack}`).sort().join('|');
-  onlineSeatPollId = setInterval(async () => {
-    if(currentOnlineTableId !== tableId || document.hidden || onlineBusy) return;
-    const { data: seats } = await sb.from('online_seats').select('seat_no,user_id,stack').eq('table_id', tableId);
-    if(currentOnlineTableId !== tableId || !seats) return;
-    const t = onlineTables.find(x => x.id === tableId);
-    if(seatSig(seats) !== seatSig(t && t.seats)){ await refreshOnlineTableAndSeat(); return; }
-    // Sicherheitsnetz, falls ein Broadcast verpasst wurde (z.B. erst nach Hinsetzen abonniert): Handstatus abgleichen
-    if(onlineMySeat != null){
-      const { data: pub } = await sb.rpc('get_public_hand_state', { p_table_id: tableId });
-      const sig = (h) => h ? `${h.hand_no}|${h.phase}|${h.current_seat}|${(h.board||[]).length}|${Object.keys(h.bets||{}).sort().map(k => k+':'+Number(h.bets[k])).join(',')}` : '';
-      if(currentOnlineTableId === tableId && sig(pub) !== sig(onlineHandState)){ await refreshOnlineTableAndSeat(); }
-    }
-  }, 3000);
+// Letzte Aktionen als Sprechblasen am Sitz (Fold / Check / Call / Bet / Raise / 3-Bet / All-in)
+let onlineActionBubbles = {};      // seatNo -> {text, kind, ts}
+let onlineStreetAggr = 0;          // wie viele Bets/Raises auf dieser Strasse schon passiert sind
+let onlineStreetKey = '';
+const ONLINE_BUBBLE_MS = 2600;
+function onlineBubbleFromState(st){
+  if(!st) return;
+  const key = `${st.hand_no}|${st.phase}`;
+  if(key !== onlineStreetKey){
+    onlineStreetKey = key;
+    // Preflop zählt der Big Blind bereits als erster Bet
+    onlineStreetAggr = (st.phase === 'preflop') ? 1 : 0;
+  }
+  const la = st.last_action;
+  if(!la || la.seat == null) return;
+  let text, kind;
+  const amt = la.amount != null ? Number(la.amount) : null;
+  const wasAllIn = st.all_in && st.all_in[String(la.seat)];
+  if(la.action === 'fold'){ text = 'Fold'; kind = 'fold'; }
+  else if(la.action === 'check'){ text = 'Check'; kind = 'check'; }
+  else if(la.action === 'call'){ text = 'Call'; kind = 'call'; }
+  else if(la.action === 'bet' || la.action === 'raise'){
+    onlineStreetAggr++;
+    const k = onlineStreetAggr;
+    const pre = st.phase === 'preflop' || (st.phase === 'done' && false);
+    let name;
+    if(k === 1) name = 'Bet';
+    else if(k === 2) name = 'Raise';
+    else name = k + '-Bet';
+    text = name + (amt ? ' ' + fmtChipPlain(amt) : '');
+    kind = 'raise';
+  } else { return; }
+  if(wasAllIn && la.action !== 'fold'){ text = 'All-in'; kind = 'allin'; }
+  onlineActionBubbles[la.seat] = { text, kind, ts: Date.now() };
+  setTimeout(() => { if(currentOnlineTableId) render(); }, ONLINE_BUBBLE_MS + 80);
+}
+
+function subscribePublicChannel(tableId){
+  if(onlinePublicChannel){ sb.removeChannel(onlinePublicChannel); onlinePublicChannel = null; }
   onlinePublicChannel = sb.channel(`table:${tableId}:public`)
     .on('broadcast', { event: 'state' }, (msg) => {
       if(currentOnlineTableId !== tableId) return;
@@ -873,11 +916,45 @@ function subscribeOnlineChannels(){
       // privaten Kanal unten, hier NICHT mehr überschreiben (sonst würden die
       // eigenen Karten fälschlich ausgeblendet, sobald man selbst mucken "würde").
       onlineHandState = { ...msg.payload, hole_cards: msg.payload.revealed_hole_cards || {} };
+      onlineBubbleFromState(msg.payload);
       render();
     })
     .subscribe();
+}
+
+let onlinePollTick = 0;
+async function onlinePollOnce(tableId){
+  if(currentOnlineTableId !== tableId || onlineBusy) return;
+  onlinePollTick++;
+  // Realtime-Verbindung abgerissen? Dann Kanal neu aufbauen (Handy-Standby, WLAN-Wechsel ...)
+  if(onlinePublicChannel && !['joined','joining'].includes(onlinePublicChannel.state)) subscribePublicChannel(tableId);
+  const seatSig = (arr) => (arr||[]).map(x => `${x.seat_no}:${x.user_id}:${x.stack}`).sort().join('|');
+  // Sitzbelegung ist nicht per Realtime verbunden → alle ~3 s nachsehen
+  if(onlinePollTick % 2 === 0){
+    const { data: seats } = await sb.from('online_seats').select('seat_no,user_id,stack').eq('table_id', tableId);
+    if(currentOnlineTableId !== tableId) return;
+    const t = onlineTables.find(x => x.id === tableId);
+    if(seats && seatSig(seats) !== seatSig(t && t.seats)){ await refreshOnlineTableAndSeat(); return; }
+  }
+  // Sicherheitsnetz, falls ein Broadcast verpasst wurde: Handstatus abgleichen
+  if(onlineMySeat != null){
+    const { data: pub } = await sb.rpc('get_public_hand_state', { p_table_id: tableId });
+    const sig = (h) => h ? `${h.hand_no}|${h.phase}|${h.current_seat}|${(h.board||[]).length}|${Object.keys(h.bets||{}).sort().map(k => k+':'+Number(h.bets[k])).join(',')}` : '';
+    if(currentOnlineTableId === tableId && sig(pub) !== sig(onlineHandState)){ await refreshOnlineTableAndSeat(); }
+  }
+}
+function subscribeOnlineChannels(){
+  cleanupOnlineChannels();
+  const tableId = currentOnlineTableId;
+  onlinePollTick = 0;
+  onlineSeatPollId = setInterval(() => { onlinePollOnce(tableId).catch(e => console.warn('online poll failed', e)); }, 1500);
+  subscribePublicChannel(tableId);
   ensureOnlinePrivateChannel();
 }
+// Beim Zurückkehren in den Tab sofort abgleichen
+document.addEventListener('visibilitychange', () => {
+  if(!document.hidden && currentOnlineTableId) refreshOnlineTableAndSeat();
+});
 
 // Privater Hole-Card-Kanal: wird nach dem Hinsetzen nachträglich abonniert (nicht nur beim Öffnen des Tisches)
 let onlinePrivateChannelSeat = null;
@@ -1016,6 +1093,7 @@ async function callSubmitAction(action, amount){
     if(amount != null) body.amount = amount;
     const { data, error } = await sb.functions.invoke('submit_action', { body });
     if(error || (data && data.error)){ showToast('Fehler: ' + await edgeErrorText(data, error)); return; }
+    await refreshOnlineTableAndSeat();
   } finally { onlineBusy = false; }
 }
 
@@ -1032,7 +1110,7 @@ function onlineSeatLabel(seatNo){
   const seat = tbl ? tbl.seats.find(s => s.seat_no === seatNo) : null;
   if(!seat || !seat.user_id) return 'Frei';
   const name = onlineSeatPlayerName(seat);
-  return escapeHtml(name || ('Spieler ' + (seatNo+1))) + (seat.user_id === currentUser.id ? ' (Du)' : '');
+  return escapeHtml(name || ('Spieler ' + (seatNo+1))) + '';
 }
 
 // Baut EINEN Sitzplatz für die grosse ovale Tisch-Grafik. Konsumiert dieselben
@@ -1083,7 +1161,7 @@ function onlinePokerSeatHtml(slot, seatRow, seatNo, hs, isMe){
     cardsHtml = blankCardHtml() + blankCardHtml();
   }
 
-  const nameInnerHtml = `<div class="seat-name${isActor?' seat-turn-blink':''}" style="color:${textColor};transform:scale(${slot.nameScale});transform-origin:center;">${escapeHtml(fullName(displayObj))}${isMe?' (Du)':''}</div>`;
+  const nameInnerHtml = `<div class="seat-name${isActor?' seat-turn-blink':''}" style="color:${textColor};transform:scale(${slot.nameScale});transform-origin:center;">${escapeHtml(fullName(displayObj))}</div>`;
   const statusBadge = folded ? `<div class="action-badge" style="background:#8A8A8A;">FOLD</div>` : (isAllIn ? `<div class="action-badge" style="background:var(--brass);">ALL-IN</div>` : '');
   const stackRowHtml = `<div class="stack-row"><div class="seat-stack">${fmtChipPlain(seatRow.stack)}</div></div>${statusBadge}`;
   const stackInnerHtml = `<div class="${isActor?'seat-turn-blink':''}" style="color:${textColor};transform:scale(${slot.stackScale});transform-origin:center;">${stackRowHtml}</div>`;
@@ -1104,7 +1182,17 @@ function onlinePokerSeatHtml(slot, seatRow, seatNo, hs, isMe){
     <div class="poker-seat${folded?' folded':''}${isActor?' active':''}" ${slot.seatAttrs||''} style="left:${slot.left}%;top:${slot.top}%;width:${avatarSizePercent(slot.avatarScale)}%;z-index:${slot.zAvatar!=null?slot.zAvatar:2};">
       ${avatarHtml(displayObj, avatarSeatStyleAttr(slot.avatarScale, slot.zAvatar))}
       ${!useAbsoluteBox ? platePlateHtml : ''}
-    </div>${useAbsoluteBox ? platePlateHtml : ''}${standaloneNameHtml}${standaloneStackHtml}${standaloneHoleCardsHtml}${standalonePosTagHtml}`;
+    </div>${useAbsoluteBox ? platePlateHtml : ''}${standaloneNameHtml}${standaloneStackHtml}${standaloneHoleCardsHtml}${standalonePosTagHtml}${onlineActionBubbleHtml(slot, seatNo)}`;
+}
+
+// Sprechblase mit der letzten Aktion — läuft per CSS-Animation und wird nach ~2,6 s unsichtbar.
+// animation-delay mit negativem Wert, damit die Animation bei einem Neu-Rendern nicht von vorn beginnt.
+function onlineActionBubbleHtml(slot, seatNo){
+  const b = onlineActionBubbles[seatNo];
+  if(!b) return '';
+  const elapsed = Date.now() - b.ts;
+  if(elapsed >= ONLINE_BUBBLE_MS){ delete onlineActionBubbles[seatNo]; return ''; }
+  return `<div class="action-bubble ab-${b.kind}" style="left:${slot.left}%;top:${slot.top}%;animation-delay:-${elapsed}ms;">${escapeHtml(b.text)}</div>`;
 }
 
 // ---- Persönliches Tisch-Design für Online-Tische (nur lokal in diesem Browser, wirkt nur auf die eigene Ansicht) ----
@@ -1291,7 +1379,7 @@ function renderOnlinePayoutSummary(payouts){
   if(!entries.length) return '';
   const parts = entries.map(seatNo => {
     const isMe = Number(seatNo) === onlineMySeat;
-    return `${escapeHtml(onlineSeatLabel(Number(seatNo)))}: +${formatMoney(payouts[seatNo])}${isMe ? ' (Du)' : ''}`;
+    return `${escapeHtml(onlineSeatLabel(Number(seatNo)))}: +${formatMoney(payouts[seatNo])}`;
   });
   return (entries.length > 1 ? 'Split Pot — ' : '') + parts.join(' · ');
 }
@@ -1322,9 +1410,15 @@ function renderOnlineSeatPicker(tbl){
 // Betrags-Box mit Bet-Raster des Tisches oder Numblock)
 let onlineBetBoxLabel = null;   // null = Betrags-Box zu; sonst "Bet" / "Raise"
 let onlineBetInputVal = '';
+// Tisch-Optionen: bevorzugt aus der DB-Spalte online_tables.options, sonst aus dem Club (Fallback ohne SQL)
+function onlineTableOptions(tbl){
+  if(!tbl) return {};
+  if(tbl.options && Object.keys(tbl.options).length) return tbl.options;
+  return (currentClub && currentClub.onlineTableOptions && currentClub.onlineTableOptions[tbl.id]) || {};
+}
 function onlineBetGridProfile(){
   const tbl = onlineTables.find(x => x.id === currentOnlineTableId);
-  const id = tbl && tbl.options && tbl.options.betGridId;
+  const id = onlineTableOptions(tbl).betGridId;
   return id ? ((currentClub.betGridProfiles||[]).find(p => p.id === id) || null) : null;
 }
 function renderOnlineActionBar(toCall, myStack, hs, tbl){
