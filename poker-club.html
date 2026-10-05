@@ -2159,6 +2159,7 @@ function enterClubUI(){
   // layoutTemplates ist ab sofort dieselbe Array-Referenz wie currentClub.tableLayouts — push/splice
   // darauf ändert also direkt den Club-Datensatz mit, ganz ohne Umweg über eine eigene Save-Funktion.
   layoutTemplates = currentClub.tableLayouts;
+  loadSeatViewPrefs();
   // Einmalige Migration (nur relevant für Clubs, die schon vor dieser Umstellung Layouts hatten):
   // früher lagen Table-Designer-Layouts global (app-weit, über alle Clubs hinweg geteilt) in
   // app_storage — siehe loadLegacyLayoutTemplates(). Läuft asynchron NACH deren Ladevorgang, damit
@@ -2190,6 +2191,7 @@ function enterClubUI(){
 function leaveClub(){
   currentCode = null; currentClub = null; currentSessionId = null; currentClubId = null; myRole = null;
   layoutTemplates = []; // war Referenz auf currentClub.tableLayouts — beim Clubwechsel zurücksetzen
+  seatViewCache = null;
   unlockedSessions.clear();
   document.getElementById('app').classList.remove('active');
   document.getElementById('landing').style.display = 'flex';
@@ -3016,7 +3018,7 @@ const PANEL_DEFAULT_ORDERS = {
   dashboard: ['stats','funStats','recent_sessions','recent_hands','playerCompareChart','leaderboard'],
   sessionDetailCash: ['players','chipsInPlay','chipCountCheck','kasse','closing'],
   sessionDetailTournament: ['players','chipsInPlay','chipCountCheck','kasse','closing'],
-  settings: ['members','backup','clubLogo','theme','cardDesign','chipsets','payoutTemplates','blindTemplates','betGrids','handTags','playerGroups','statsSettings','avatarGallery'],
+  settings: ['members','myView','backup','clubLogo','theme','cardDesign','chipsets','payoutTemplates','blindTemplates','betGrids','handTags','playerGroups','statsSettings','avatarGallery'],
   club: ['events','newsfeed'],
   hands: ['liveTable','savedHands','tableDesignStandard','layoutEditorTab']
 };
@@ -3056,7 +3058,7 @@ const PANEL_LABELS = {
   playerCompareChart:'Spielervergleich', funStats:'Fun-Statistiken',
   sevenDeuceToggle:'7-2 Game Schalter', chipsetSelector:'Chipset-Auswahl', betGridSelector:'Bet-Raster-Auswahl', players:'Spieler', chipsInPlay:'Chips im Spiel', kasse:'Kasse', closing:'Abschluss',
   backup:'Backup', theme:'Seitendesign', tableDesign:'Tisch-Design', chipsets:'Chipsets', payoutTemplates:'Turnier-Payoutstrukturen',
-  events:'Events', newsfeed:'Newsfeed', blindTemplates:'Blind-Strukturen', chipCountCheck:'Chip-Kontrollzählung', handTags:'Hand-Tags', betGrids:'Bet-Raster', avatarGallery:'Avatar-Gestaltung', clubLogo:'Club-Logo', cardDesign:'Kartendesign', playerGroups:'Gruppen & Austragungsorte', statsSettings:'Statistik',
+  myView:'Meine Ansicht', events:'Events', newsfeed:'Newsfeed', blindTemplates:'Blind-Strukturen', chipCountCheck:'Chip-Kontrollzählung', handTags:'Hand-Tags', betGrids:'Bet-Raster', avatarGallery:'Avatar-Gestaltung', clubLogo:'Club-Logo', cardDesign:'Kartendesign', playerGroups:'Gruppen & Austragungsorte', statsSettings:'Statistik',
   liveTable:'Live-Tisch', savedHands:'Erfasste Hände', tableDesignStandard:'Tisch-Design', layoutEditorTab:'Layout-Editor',
   members:'Mitglieder & Anfragen'
 };
@@ -6117,10 +6119,70 @@ async function removeMember(membershipId){
   render();
 }
 
+function myViewSectionHtml(){
+  const mp = myPlayer();
+  const posLabels = { bottom:'Unten', left:'Links', top:'Oben', right:'Rechts' };
+  const sizes = [['2','Heads-up'],['6','6-Max'],['10','10-Max']];
+  let who;
+  if(mp){
+    who = `<p class="hint" style="margin:0 0 12px;">✅ Dein Login ist mit dem Spieler <strong>${escapeHtml(fullName(mp))}</strong> verknüpft.</p>`;
+  } else if(isClubAdmin()){
+    const free = (currentClub.players||[]).filter(p => !p.archived && !p.linkedEmail);
+    who = `
+      <div style="background:#FBF3E4;border:1px solid #EBD9AE;border-radius:8px;padding:10px 12px;margin-bottom:12px;">
+        <div style="font-weight:700;font-size:13px;margin-bottom:4px;">Dein Login ist noch keinem Spieler zugeordnet</div>
+        <p class="hint" style="margin:0 0 8px;">Damit die App dich am Tisch erkennt (Wunschposition, Online-Tische), verknüpfe dein Login (${escapeHtml(currentUser.email||'')}) mit deinem Spielerprofil. Nur Admins können das.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <select id="myview-link-player" style="min-width:200px;">${free.map(p => `<option value="${p.id}">${escapeHtml(fullName(p))}</option>`).join('')}</select>
+          <button class="btn btn-primary btn-sm" onclick="linkMyLoginToPlayer()" ${free.length?'':'disabled'}>Mich verknüpfen</button>
+        </div>
+      </div>`;
+  } else {
+    who = `<p class="hint" style="margin:0 0 12px;">Dein Login ist noch keinem Spieler zugeordnet. Bitte einen Admin, es unter "Spieler bearbeiten → Verknüpfter Login" einzutragen.</p>`;
+  }
+  const rows = sizes.map(([key,label]) => {
+    const pref = getSeatViewPref(key);
+    return `
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:8px 0;border-top:1px solid var(--paper-line);">
+        <span style="min-width:90px;font-weight:700;font-size:13px;">${label}</span>
+        <label style="display:flex;align-items:center;gap:6px;font-weight:400;font-size:13px;margin:0;">
+          <input type="checkbox" ${pref.hero?'checked':''} onchange="setSeatViewPref('${key}',{hero:this.checked})" style="width:16px;height:16px;">
+          Mein Sitz an Wunschposition
+        </label>
+        <select onchange="setSeatViewPref('${key}',{pos:this.value,target:null})" ${pref.hero?'':'disabled'}>
+          ${pref.target!=null ? `<option value="" selected>Eigene Position (per Rechtsklick gesetzt)</option>` : ''}
+          ${Object.keys(posLabels).map(k => `<option value="${k}" ${pref.target==null && (pref.pos||'bottom')===k ? 'selected':''}>${posLabels[k]}</option>`).join('')}
+        </select>
+      </div>`;
+  }).join('');
+  return `
+    <div class="panel">
+      <div class="panel-head"><h3>🪑 Meine Ansicht</h3></div>
+      <p class="lede" style="margin-top:-6px;font-size:12.5px;">Dreht den Tisch nur für dich so, dass dein eigener Sitz an der gewählten Stelle liegt — für Live-Hand, Replay und Online-Tische. Das Spiel selbst ändert sich nicht. Pro Tischgröße einstellbar; gilt auf allen deinen Geräten. Alternativ: Rechtsklick (am Handy langes Drücken) auf eine Sitzposition am Tisch.</p>
+      ${who}
+      ${rows}
+    </div>`;
+}
+async function linkMyLoginToPlayer(){
+  if(!isClubAdmin()) return;
+  const sel = document.getElementById('myview-link-player');
+  if(!sel || !sel.value) return;
+  const p = getPlayer(sel.value);
+  if(!p) return;
+  const email = (currentUser.email||'').toLowerCase();
+  if(!email) return;
+  if(currentClub.players.some(x => x.id !== p.id && (x.linkedEmail||'').toLowerCase() === email)){ showToast('Dieses Login ist schon einem anderen Spieler zugeordnet.'); return; }
+  if(p.linkedEmail && p.linkedEmail.toLowerCase() !== email){ showToast('Dieser Spieler ist schon mit einem anderen Login verknüpft.'); return; }
+  p.linkedEmail = currentUser.email;
+  await saveClubData();
+  showToast('Verknüpft: ' + fullName(p));
+  render();
+}
 function renderSettings(){
   const templates = currentClub.payoutTemplates || [];
   const panelsMap = {
     members: membersAndRequestsSectionHtml(),
+    myView: myViewSectionHtml(),
     backup: backupSectionHtml(),
     theme: themeDesignSectionHtml(),
     cardDesign: cardDesignSectionHtml(),
@@ -7028,38 +7090,79 @@ function layerZIndex(layout, type){
    gewählter Spieler ("Das bin ich"). Gespeichert pro Gerät/Login in localStorage.
    Der Table-Designer nutzt die Drehung bewusst NICHT. */
 function seatViewSizeKey(n){ return n<=2 ? '2' : (n<=6 ? '6' : '10'); }
-function seatViewStorageKey(){ return 'chipmate_seatview_' + (currentUser ? currentUser.id : ''); }
+// Einstellungen pro Login UND Club: in der Datenbank (Tabelle seat_view_prefs, geräteübergreifend) und
+// zusätzlich als lokale Kopie in localStorage (Fallback, solange die Tabelle fehlt oder offline).
+let seatViewCache = null;
+let seatViewSaveTimer = null;
+function seatViewStorageKey(){ return 'chipmate_seatview_' + (currentUser ? currentUser.id : '') + '_' + (currentClubId || ''); }
 function getSeatViewPrefs(){
-  try{ return JSON.parse(localStorage.getItem(seatViewStorageKey()) || '{}') || {}; }catch(e){ return {}; }
+  if(seatViewCache) return seatViewCache;
+  try{ seatViewCache = JSON.parse(localStorage.getItem(seatViewStorageKey()) || '{}') || {}; }catch(e){ seatViewCache = {}; }
+  return seatViewCache;
 }
 function getSeatViewPref(key){
   const p = getSeatViewPrefs()[key] || {};
-  return { hero: !!p.hero, target: Number.isFinite(p.target) ? p.target : null };
+  return { hero: !!p.hero, target: Number.isFinite(p.target) ? p.target : null, pos: ['bottom','left','top','right'].includes(p.pos) ? p.pos : null };
 }
-function saveSeatViewPrefs(all){ try{ localStorage.setItem(seatViewStorageKey(), JSON.stringify(all)); }catch(e){} }
+function saveSeatViewPrefs(all){
+  seatViewCache = all;
+  try{ localStorage.setItem(seatViewStorageKey(), JSON.stringify(all)); }catch(e){}
+  if(!currentClubId || !currentUser) return;
+  if(seatViewSaveTimer) clearTimeout(seatViewSaveTimer);
+  seatViewSaveTimer = setTimeout(async () => {
+    seatViewSaveTimer = null;
+    const { error } = await sb.from('seat_view_prefs').upsert(
+      { user_id: currentUser.id, club_id: currentClubId, prefs: seatViewCache, updated_at: new Date().toISOString() },
+      { onConflict: 'user_id,club_id' }
+    );
+    if(error) console.warn('seat view prefs: Speichern in der Datenbank nicht möglich (nur lokal gespeichert)', error.message);
+  }, 600);
+}
+async function loadSeatViewPrefs(){
+  seatViewCache = null;
+  if(!currentClubId || !currentUser) return;
+  try{
+    const { data, error } = await sb.from('seat_view_prefs').select('prefs').eq('user_id', currentUser.id).eq('club_id', currentClubId).maybeSingle();
+    if(!error && data && data.prefs){
+      seatViewCache = data.prefs;
+      try{ localStorage.setItem(seatViewStorageKey(), JSON.stringify(seatViewCache)); }catch(e){}
+      render();
+    }
+  }catch(e){ console.warn('seat view prefs load failed', e); }
+}
 function refreshAllTableViews(){
   render();
   if(typeof replayState !== 'undefined' && replayState && document.querySelector('#modal-root .modal')) renderReplayModal();
 }
 function setSeatViewPref(key, patch){
-  const all = getSeatViewPrefs();
+  const all = Object.assign({}, getSeatViewPrefs());
   all[key] = Object.assign(getSeatViewPref(key), patch);
   saveSeatViewPrefs(all);
   refreshAllTableViews();
 }
-// Wer bin "ich" am Tisch? Verknüpftes Spielerprofil, sonst per Menü gewählter Spieler (pro Club).
+// Wer bin "ich" am Tisch? Verknüpftes Spielerprofil, sonst ein per Menü gewählter Spieler (pro Club).
 function heroPlayerId(){
   const mp = myPlayer();
   if(mp) return mp.id;
-  const all = getSeatViewPrefs();
-  return (all.heroByClub && currentCode && all.heroByClub[currentCode]) || null;
+  return getSeatViewPrefs().heroPid || null;
 }
 function setHeroPlayerId(pid){
-  const all = getSeatViewPrefs();
-  if(!all.heroByClub) all.heroByClub = {};
-  if(currentCode) all.heroByClub[currentCode] = pid;
+  const all = Object.assign({}, getSeatViewPrefs());
+  all.heroPid = pid;
   saveSeatViewPrefs(all);
   refreshAllTableViews();
+}
+// Slot, der in einer Himmelsrichtung am weitesten aussen liegt (bei Gleichstand der mittigste).
+function seatSlotForDirection(raw, dir){
+  let best = 0;
+  const better = (p, q) => {
+    if(dir==='bottom') return p.top > q.top + 0.01 || (Math.abs(p.top-q.top) <= 0.01 && Math.abs(p.left-50) < Math.abs(q.left-50));
+    if(dir==='top')    return p.top < q.top - 0.01 || (Math.abs(p.top-q.top) <= 0.01 && Math.abs(p.left-50) < Math.abs(q.left-50));
+    if(dir==='left')   return p.left < q.left - 0.01 || (Math.abs(p.left-q.left) <= 0.01 && Math.abs(p.top-50) < Math.abs(q.top-50));
+    return p.left > q.left + 0.01 || (Math.abs(p.left-q.left) <= 0.01 && Math.abs(p.top-50) < Math.abs(q.top-50));
+  };
+  raw.forEach((p,i) => { if(better(p, raw[best])) best = i; });
+  return best;
 }
 // Wie getSeatSlotsForRender, aber gedreht: der Slot mit Index a (tatsächlicher Sitz) bekommt die
 // Position/Darstellung des Slots (a + rot) mod n. mySlot = Index des eigenen Sitzes (oder null).
@@ -7069,14 +7172,10 @@ function getSeatSlotsForView(seatCount, sessionId, layoutOverride, mySlot){
   const n = raw.length;
   const key = seatViewSizeKey(n);
   const pref = getSeatViewPref(key);
-  // "Unten" = der Slot mit dem grössten top-Wert (bei Gleichstand der, der am nächsten zur Mitte liegt).
-  let B = 0;
-  raw.forEach((p,i) => {
-    if(p.top > raw[B].top + 0.01 || (Math.abs(p.top - raw[B].top) <= 0.01 && Math.abs(p.left-50) < Math.abs(raw[B].left-50))) B = i;
-  });
+  const B = seatSlotForDirection(raw, 'bottom');
   let rot = 0;
   if(pref.hero && mySlot != null && mySlot >= 0 && mySlot < n){
-    const target = (pref.target != null && pref.target < n) ? pref.target : B;
+    const target = (pref.target != null && pref.target < n) ? pref.target : seatSlotForDirection(raw, pref.pos || 'bottom');
     rot = (((target - mySlot) % n) + n) % n;
   }
   const R = raw.map((_, a) => raw[(a + rot) % n]);
@@ -7112,11 +7211,11 @@ function showSeatMenu(x, y, el){
       ? item(`🙋 Das bin ich: ${escapeHtml(fullName(clickedPl))}`, `closeSeatMenu();setHeroPlayerId('${pid}')`)
       : `<div style="padding:4px 10px;font-size:12px;color:var(--ink-soft,#777);">Klicke auf deinen eigenen Sitz und wähle "Das bin ich".</div>`;
   } else {
-    html += item(`🪑 Ich möchte hier sitzen${heroPl ? ' ('+escapeHtml(fullName(heroPl))+')' : ''}`, `closeSeatMenu();setSeatViewPref('${key}',{hero:true,target:${d}})`, me==='');
+    html += item(`🪑 Ich möchte hier sitzen${heroPl ? ' ('+escapeHtml(fullName(heroPl))+')' : ''}`, `closeSeatMenu();setSeatViewPref('${key}',{hero:true,target:${d},pos:null})`, me==='');
     if(me==='') html += `<div style="padding:0 10px 4px;font-size:11px;color:var(--ink-soft,#777);">Du sitzt an diesem Tisch gerade nicht.</div>`;
     if(!linked && clickedPl && clickedPl.id !== heroPlayerId()) html += item(`🙋 Das bin ich: ${escapeHtml(fullName(clickedPl))}`, `closeSeatMenu();setHeroPlayerId('${pid}')`);
   }
-  html += item('↺ Standardansicht', `closeSeatMenu();setSeatViewPref('${key}',{hero:false,target:null})`, !pref.hero);
+  html += item('↺ Standardansicht', `closeSeatMenu();setSeatViewPref('${key}',{hero:false,target:null,pos:null})`, !pref.hero);
   menu.innerHTML = html;
   document.body.appendChild(menu);
 }
