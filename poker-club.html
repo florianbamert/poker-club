@@ -9148,6 +9148,35 @@ function undoLastHandAction(){
   handFlow = JSON.parse(snap, (k,v) => (v && v.__set) ? new Set(v.__set) : v);
   render();
 }
+// Fold mit Rückfrage, wenn er (fast) nie sinnvoll ist: wenn der Spieler gratis checken kann, oder als
+// SB/BB preflop, solange nur gelimpt wurde (kein Raise). Dann: "Wirklich folden oder lieber Check/Call?"
+function requestFold(){
+  if(!canWrite() || !handFlow) return;
+  const pid = handFlow.queue[0];
+  if(!pid){ handAction('fold'); return; }
+  const toCall = handFlow.currentBet - (handFlow.streetContrib[pid]||0);
+  const isBlind = pid===handFlow.sbId || pid===handFlow.bbId;
+  const onlyLimps = handFlow.street==='preflop' && handFlow.raiseCount===0;
+  const canCheck = toCall <= 0.001;
+  if(!(canCheck || (isBlind && onlyLimps))){ handAction('fold'); return; }
+  const pl = getPlayer(pid);
+  const name = pl ? escapeHtml(fullName(pl)) : '';
+  const altLabel = canCheck ? 'Check' : ('Call ' + fmtChipPlain(toCall));
+  const why = canCheck
+    ? 'Es wurde nicht erhöht — er könnte kostenlos checken.'
+    : 'Es wurde nur gelimpt — der Call kostet nur ' + fmtChipPlain(toCall) + '.';
+  document.getElementById('modal-root').innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this) closeModal()">
+      <div class="modal" style="max-width:380px;">
+        <h2>Wirklich folden?</h2>
+        <p class="lede" style="margin-top:-6px;"><strong>${name}</strong> — ${why} Sind Sie sicher, dass Sie folden wollen?</p>
+        <div class="modal-actions" style="flex-wrap:wrap;gap:8px;">
+          <button class="btn btn-secondary" onclick="closeModal(); handAction('fold')">Ja, Fold</button>
+          <button class="btn btn-primary" onclick="closeModal(); handAction('checkcall')">${altLabel}</button>
+        </div>
+      </div>
+    </div>`;
+}
 async function handAction(actionType, amount){
   if(!canWrite()) return;
   snapshotHandFlowForUndo();
@@ -9945,7 +9974,7 @@ function renderHandFlowUI(s){
     actionArea = `
       <div style="font-weight:700;font-size:16px;margin-bottom:14px;">${t('label_action_prompt',{name:escapeHtml(fullName(pl))})}</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
-        <button class="btn btn-primary" style="flex:1;min-width:0;padding:8px 6px;" onclick="handAction('fold')">Fold</button>
+        <button class="btn btn-primary" style="flex:1;min-width:0;padding:8px 6px;" onclick="requestFold()">Fold</button>
         ${checkCallBtn}
         ${raiseBtn}
       </div>
