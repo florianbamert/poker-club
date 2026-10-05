@@ -2141,7 +2141,9 @@ async function forgetClub(code, ev){
 async function renderMyClubsList(){
   const el = document.getElementById('my-clubs-list');
   const list = await getMyClubs();
-  if(!list.length){ el.innerHTML = ''; return; }
+  const hiddenCount = getHiddenClubs().length;
+  const unhideLink = hiddenCount ? `<div style="text-align:center;margin-top:10px;"><button class="btn-text" style="font-size:12px;" onclick="setHiddenClubs([]); renderMyClubsList();">Ausgeblendete Clubs wieder anzeigen (${hiddenCount})</button></div>` : '';
+  if(!list.length){ el.innerHTML = unhideLink; return; }
   el.innerHTML = `
     <div class="mc-label">${t('label_my_clubs')}</div>
     ${list.map(c => `
@@ -2152,6 +2154,7 @@ async function renderMyClubsList(){
         </div>
         <button class="mc-remove" onclick="forgetClub('${c.code}', event)" title="${t('btn_forget_club')}">✕</button>
       </div>`).join('')}
+    ${unhideLink}
   `;
 }
 // Zentrale Funktion: schlägt einen Club-Code in der echten Tabelle nach und prüft
