@@ -650,7 +650,9 @@ let onlineRaiseAmount = '';       // Eingabefeld-Wert für Bet/Raise
 // (dann gilt tbl.layout_id als Fallback), null = bewusst "Standard-Tisch" gewählt, string = eigenes Layout.
 let onlineMyLayoutPref = undefined;
 
+let onlineSeatPollId = null;
 function cleanupOnlineChannels(){
+  if(onlineSeatPollId){ clearInterval(onlineSeatPollId); onlineSeatPollId = null; }
   if(onlinePublicChannel){ sb.removeChannel(onlinePublicChannel); onlinePublicChannel = null; }
   if(onlinePrivateChannel){ sb.removeChannel(onlinePrivateChannel); onlinePrivateChannel = null; }
 }
@@ -810,6 +812,15 @@ async function refreshOnlineTableAndSeat(){
 function subscribeOnlineChannels(){
   cleanupOnlineChannels();
   const tableId = currentOnlineTableId;
+  // Sitzbelegung ist nicht per Realtime verbunden → alle 3 s nachsehen, ob jemand Platz genommen/aufgestanden ist
+  const seatSig = (arr) => (arr||[]).map(x => `${x.seat_no}:${x.user_id}:${x.stack}`).sort().join('|');
+  onlineSeatPollId = setInterval(async () => {
+    if(currentOnlineTableId !== tableId || document.hidden) return;
+    const { data: seats } = await sb.from('online_seats').select('seat_no,user_id,stack').eq('table_id', tableId);
+    if(currentOnlineTableId !== tableId || !seats) return;
+    const t = onlineTables.find(x => x.id === tableId);
+    if(seatSig(seats) !== seatSig(t && t.seats)) await refreshOnlineTableAndSeat();
+  }, 3000);
   onlinePublicChannel = sb.channel(`table:${tableId}:public`)
     .on('broadcast', { event: 'state' }, (msg) => {
       if(currentOnlineTableId !== tableId) return;
