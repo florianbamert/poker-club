@@ -12617,7 +12617,10 @@ function openSheetImportOverlay(){
         <input type="range" min="1" max="8" step="0.25" id="sheet-zoom" value="${s.zoom||1}" style="width:160px;" oninput="setSheetZoom(null,this.value)">
         <button type="button" class="btn btn-secondary btn-sm" onclick="setSheetZoom(0.5)">+</button>
         <span id="sheet-zoom-v" class="lede" style="margin:0;">${s.zoom||1}×</span>
-        <span class="lede" style="margin:0;font-size:12px;">Bei Zoom das Bild im Rahmen scrollen, dann die gelben Griffe präzise setzen.</span>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="sheetZoomToHandle('tl')">🔍 Griff oben links</button>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="sheetZoomToHandle('br')">🔍 Griff unten rechts</button>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="setSheetZoom(null,1)">Ganzes Bild</button>
+        <span class="lede" style="margin:0;font-size:12px;">Mausrad = zoomen an der Mausposition, leere Fläche ziehen = Bild verschieben.</span>
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:12px;padding:8px 10px;background:var(--paper);border:1px solid var(--paper-line);border-radius:8px;">
         <span class="lede" style="margin:0;font-weight:700;">Gelbes Raster exakt (%):</span>
@@ -12627,7 +12630,7 @@ function openSheetImportOverlay(){
         <label style="display:flex;align-items:center;gap:4px;">Unten <input type="number" min="0" max="100" step="0.1" id="sheet-rect-bottom" value="${s.rect.bottom.toFixed(1)}" style="width:72px;" oninput="updateSheetRectFromInputs()"></label>
         <span class="lede" style="margin:0;">Statt an den gelben Griffen zu ziehen: Werte direkt eintippen oder mit den kleinen Pfeilen am Feld in 0.1%-Schritten nachjustieren (gedrückt halten für schnelleres Wiederholen).</span>
       </div>
-      <div id="sheet-import-scroll" style="width:${dispW}px;max-width:100%;max-height:62vh;overflow:auto;margin:0 auto;border-radius:6px;background:#111;">
+      <div id="sheet-import-scroll" style="width:${dispW}px;max-width:100%;max-height:72vh;overflow:auto;cursor:move;margin:0 auto;border-radius:6px;background:#111;">
       <div id="sheet-import-container" style="position:relative;width:${dispW*(s.zoom||1)}px;height:${dispH*(s.zoom||1)}px;background:#111;touch-action:none;user-select:none;">
         <img src="${s.dataUrl}" style="position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;" draggable="false">
         <div id="sheet-rect-outline" style="position:absolute;border:2px solid #ffcc33;pointer-events:none;box-sizing:border-box;"></div>
@@ -12664,6 +12667,7 @@ function openSheetImportOverlay(){
   window.addEventListener('mouseup', onSheetWindowMouseUp);
   window.addEventListener('touchmove', onSheetWindowTouchMove, {passive:false});
   window.addEventListener('touchend', onSheetWindowTouchEnd);
+  sheetBindZoomPan();
   renderSheetOverlayVisuals();
 }
 function onSheetWindowMouseMove(e){ sheetContainerPointerMove(e.clientX, e.clientY); }
@@ -12755,23 +12759,48 @@ function resetSheetInset(){
   document.getElementById('sheet-offX').value = 0; document.getElementById('sheet-offY').value = 0;
   updateSheetInset();
 }
-function setSheetZoom(delta, abs){
+function setSheetZoom(delta, abs, focus){
   const s = sheetImportState; if(!s) return;
   let z = abs != null ? Number(abs) : (s.zoom||1) + delta;
   z = Math.max(1, Math.min(8, z || 1));
   const scroll = document.getElementById('sheet-import-scroll');
   const cont = document.getElementById('sheet-import-container');
   if(!scroll || !cont) return;
-  // Bildmitte des sichtbaren Ausschnitts beibehalten
-  const fx = (scroll.scrollLeft + scroll.clientWidth/2) / cont.clientWidth;
-  const fy = (scroll.scrollTop + scroll.clientHeight/2) / cont.clientHeight;
+  // Fokuspunkt: Bildanteil (fx,fy) soll an Position (vx,vy) im Sichtfenster bleiben (Standard: Mitte)
+  const f = focus || { fx:(scroll.scrollLeft + scroll.clientWidth/2) / cont.clientWidth, fy:(scroll.scrollTop + scroll.clientHeight/2) / cont.clientHeight, vx:scroll.clientWidth/2, vy:scroll.clientHeight/2 };
   const { dispW, dispH } = sheetImportDisplaySize();
   s.zoom = z;
   cont.style.width = (dispW*z)+'px'; cont.style.height = (dispH*z)+'px';
-  scroll.scrollLeft = fx*cont.clientWidth - scroll.clientWidth/2;
-  scroll.scrollTop = fy*cont.clientHeight - scroll.clientHeight/2;
+  scroll.scrollLeft = f.fx*cont.clientWidth - f.vx;
+  scroll.scrollTop = f.fy*cont.clientHeight - f.vy;
   const sl = document.getElementById('sheet-zoom'); if(sl) sl.value = z;
   const v = document.getElementById('sheet-zoom-v'); if(v) v.textContent = z+'×';
+}
+function sheetZoomToHandle(which){
+  const s = sheetImportState; if(!s) return;
+  const px = which === 'tl' ? s.rect.left : s.rect.right, py = which === 'tl' ? s.rect.top : s.rect.bottom;
+  const scroll = document.getElementById('sheet-import-scroll'); if(!scroll) return;
+  setSheetZoom(null, Math.max(s.zoom||1, 4), { fx:px/100, fy:py/100, vx:scroll.clientWidth/2, vy:scroll.clientHeight/2 });
+}
+function sheetBindZoomPan(){
+  const scroll = document.getElementById('sheet-import-scroll'); if(!scroll) return;
+  scroll.addEventListener('wheel', e => {
+    const s = sheetImportState; if(!s) return;
+    e.preventDefault();
+    const cont = document.getElementById('sheet-import-container');
+    const r = scroll.getBoundingClientRect();
+    const vx = e.clientX - r.left, vy = e.clientY - r.top;
+    const fx = (scroll.scrollLeft + vx) / cont.clientWidth, fy = (scroll.scrollTop + vy) / cont.clientHeight;
+    setSheetZoom(e.deltaY < 0 ? 0.5 : -0.5, null, { fx, fy, vx, vy });
+  }, { passive:false });
+  let pan = null;
+  scroll.addEventListener('mousedown', e => {
+    if(e.target.closest('.sheet-handle')) return;
+    pan = { x:e.clientX, y:e.clientY, sl:scroll.scrollLeft, st:scroll.scrollTop };
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', e => { if(pan){ scroll.scrollLeft = pan.sl - (e.clientX - pan.x); scroll.scrollTop = pan.st - (e.clientY - pan.y); } });
+  window.addEventListener('mouseup', () => { pan = null; });
 }
 function snapSheetRectToImageEdges(){
   // Abkürzung für bereits saubere, randlose Raster (z.B. direkt von der KI exportierte Sprite-Sheets):
