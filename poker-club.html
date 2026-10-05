@@ -660,6 +660,7 @@ function cleanupOnlineChannels(){
 
 function resetOnlineTableState(){
   cleanupOnlineChannels();
+  onlineBetBoxLabel = null; onlineBetInputVal = '';
   currentOnlineTableId = null;
   onlineMySeat = null;
   onlineHandState = null;
@@ -855,7 +856,7 @@ function subscribeOnlineChannels(){
     // Sicherheitsnetz, falls ein Broadcast verpasst wurde (z.B. erst nach Hinsetzen abonniert): Handstatus abgleichen
     if(onlineMySeat != null){
       const { data: pub } = await sb.rpc('get_public_hand_state', { p_table_id: tableId });
-      const sig = (h) => h ? `${h.hand_no}|${h.phase}|${h.current_seat}|${h.pot}|${JSON.stringify(h.bets||{})}|${(h.board||[]).length}` : '';
+      const sig = (h) => h ? `${h.hand_no}|${h.phase}|${h.current_seat}|${(h.board||[]).length}|${Object.keys(h.bets||{}).sort().map(k => k+':'+Number(h.bets[k])).join(',')}` : '';
       if(currentOnlineTableId === tableId && sig(pub) !== sig(onlineHandState)){ await refreshOnlineTableAndSeat(); }
     }
   }, 3000);
@@ -1227,38 +1228,47 @@ function renderOnlineTableViewInner(){
       <div><h1>Online-Tisch</h1><p class="lede" style="margin-bottom:0">Blinds ${formatMoney(tbl.small_blind)} / ${formatMoney(tbl.big_blind)} · ${seatCount} Sitze${hs && hs.hand_no ? ` · Hand #${hs.hand_no}` : ''}${isFinished ? ' · Tisch abgeschlossen' : ''}</p></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button class="btn btn-secondary btn-sm" onclick="backToOnlineLobby()">← Lobby</button>
-        <button class="btn btn-secondary btn-sm" onclick="openOnlineDesignModal()">🎨 Design</button>
         ${!isFinished ? `<button class="btn btn-secondary btn-sm" onclick="addOnlineBuyin()">+ Nachkaufen</button>` : ''}
         ${!isFinished ? `<button class="btn btn-secondary btn-sm" onclick="leaveOnlineSeat()">Platz verlassen</button>` : ''}
       </div>
     </div>
     ${isFinished ? `<div class="panel" style="text-align:center;background:var(--btn-secondary-bg);"><strong>Dieser Tisch ist geschlossen.</strong> Das Ergebnis wurde als Session in die Statistik übernommen.</div>` : ''}
-    <div class="panel table-pane" style="margin-bottom:16px;padding:0;position:relative;">
-      <div class="table-bg-wrap" style="${tableOuterBgStyleAttr(null, chosenLayout || {})}padding:10px;">
-        <div class="poker-table-oval" style="${tableFeltStyleAttr(chosenLayout || {})}">
-          ${seatsHtml}
-          <div class="pot-center" style="${chosenLayout && chosenLayout.potX!=null && chosenLayout.potY!=null ? `left:${chosenLayout.potX}%;top:${chosenLayout.potY}%;transform:translate(-50%,-50%);` : ''}">
-            ${hs && hs.board && hs.board.length ? `<div class="board-cards">${hs.board.map(cardChipHtml).join('')}</div>` : ''}
-            <div class="amt">${fmtChipPlain(hs ? hs.pot : 0)}</div>
-            <div class="lbl">Pot</div>
+    <div class="hand-flow-split">
+      <div class="panel table-pane" style="margin-bottom:0;padding:0;position:relative;">
+        <div class="table-bg-wrap" style="${tableOuterBgStyleAttr(null, chosenLayout || {})}padding:10px;">
+          <div class="poker-table-oval" style="${tableFeltStyleAttr(chosenLayout || {})}">
+            ${chosenLayout && !chosenLayout.bettingLineHidden ? bettingLineOverlayHtml(chosenLayout) : ''}
+            ${seatsHtml}
+            <div class="board-center" style="${chosenLayout && chosenLayout.boardX!=null && chosenLayout.boardY!=null ? `left:${chosenLayout.boardX}%;top:${chosenLayout.boardY}%;transform:translate(-50%,-50%);` : ''}">
+              ${hs && hs.board && hs.board.length ? `<div class="board-cards">${hs.board.map(cardChipHtml).join('')}</div>` : ''}
+            </div>
+            <div class="pot-center" style="${chosenLayout && chosenLayout.potX!=null && chosenLayout.potY!=null ? `left:${chosenLayout.potX}%;top:${chosenLayout.potY}%;transform:translate(-50%,-50%);` : ''}">
+              <div class="amt">${fmtChipPlain(hs ? hs.pot : 0)}</div>
+              <div class="lbl">Pot</div>
+            </div>
           </div>
         </div>
+        <div style="position:absolute;bottom:16px;left:16px;display:flex;gap:8px;align-items:center;z-index:8;">
+          ${!isFinished && matchingLayouts.length ? `
+          <select onchange="setMyOnlineLayoutPref('${tbl.id}', this.value||null)" style="font-size:12px;padding:5px 6px;border-radius:6px;" title="Dein persönliches Tisch-Layout — gilt nur für deine eigene Ansicht">
+            <option value="">Standard-Tisch</option>
+            ${matchingLayouts.map(lt => `<option value="${lt.id}" ${chosenLayout && chosenLayout.id===lt.id ? 'selected':''}>${escapeHtml(lt.name)}</option>`).join('')}
+          </select>` : ''}
+          <button class="btn btn-sm" style="padding:5px 10px;font-size:12px;background:var(--brass);color:#fff;border-color:var(--brass);" onclick="openOnlineDesignModal()">🎨 Design</button>
+        </div>
       </div>
-      ${!isFinished && matchingLayouts.length ? `
-      <div style="position:absolute;bottom:16px;left:16px;z-index:8;">
-        <select onchange="setMyOnlineLayoutPref('${tbl.id}', this.value||null)" style="font-size:12px;padding:5px 6px;border-radius:6px;" title="Dein persönliches Tisch-Layout — gilt nur für deine eigene Ansicht">
-          <option value="">Standard-Tisch</option>
-          ${matchingLayouts.map(lt => `<option value="${lt.id}" ${chosenLayout && chosenLayout.id===lt.id ? 'selected':''}>${escapeHtml(lt.name)}</option>`).join('')}
-        </select>
-      </div>` : ''}
+      <div class="panel action-pane light" style="margin-bottom:0;position:relative;padding-top:14px;">
+        ${hs && hs.hand_no ? `<span class="street-pill">Hand #${hs.hand_no} · ${({preflop:'Preflop',flop:'Flop',turn:'Turn',river:'River',showdown:'Showdown',done:'Beendet'})[phase] || phase}</span>` : ''}
+        ${canStart || canClose ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0;">
+          ${canStart ? `<button class="btn btn-primary" onclick="callStartHand()">${hs && hs.hand_no ? 'Nächste Hand starten' : 'Hand starten'}</button>` : ''}
+          ${canClose ? `<button class="btn btn-secondary" onclick="closeOnlineTable()">Tisch schliessen &amp; Ergebnis übernehmen</button>` : ''}
+        </div>` : ''}
+        ${(!hs || !hs.hand_no) && seatedRows.length >= 2 && !seatedRows.every(s => s.player_id) ? `<p class="lede" style="font-size:12px;">Hinweis: Ohne verknüpften Spieler (siehe Players-Tab) kann dieser Tisch später nicht in die Statistik übernommen werden.</p>` : ''}
+        ${hs && hs.hand_over && hs.payouts ? `<div class="status-banner ok" style="margin:10px 0;"><strong>${renderOnlinePayoutSummary(hs.payouts)}</strong></div>` : ''}
+        ${myTurn ? renderOnlineActionBar(toCall, mySeatRow ? mySeatRow.stack : 0, hs, tbl)
+                 : (hs && ['preflop','flop','turn','river'].includes(phase) ? `<div style="text-align:center;color:var(--ink-soft);padding:16px 0;">Warte auf ${escapeHtml(onlineSeatLabel(hs.current_seat))}…</div>` : '')}
+      </div>
     </div>
-    ${canStart || canClose ? `<div class="panel" style="text-align:center;display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
-      ${canStart ? `<button class="btn btn-primary" onclick="callStartHand()">${hs && hs.hand_no ? 'Nächste Hand starten' : 'Hand starten'}</button>` : ''}
-      ${canClose ? `<button class="btn btn-secondary" onclick="closeOnlineTable()">Tisch schliessen &amp; Ergebnis übernehmen</button>` : ''}
-    </div>` : ''}
-    ${(!hs || !hs.hand_no) && seatedRows.length >= 2 && !seatedRows.every(s => s.player_id) ? `<div class="panel" style="text-align:center;color:#999;font-size:13px;">Hinweis: Ohne verknüpften Spieler (siehe Players-Tab) kann dieser Tisch später nicht in die Statistik übernommen werden.</div>` : ''}
-    ${hs && hs.hand_over && hs.payouts ? `<div class="panel" style="text-align:center;"><strong>${renderOnlinePayoutSummary(hs.payouts)}</strong></div>` : ''}
-    ${myTurn ? renderOnlineActionBar(toCall, mySeatRow ? mySeatRow.stack : 0, hs) : (hs && ['preflop','flop','turn','river'].includes(phase) ? `<div class="panel" style="text-align:center;color:#999;">Warte auf ${escapeHtml(onlineSeatLabel(hs.current_seat))}…</div>` : '')}
   `;
 }
 
@@ -1297,18 +1307,101 @@ function renderOnlineSeatPicker(tbl){
   `;
 }
 
-function renderOnlineActionBar(toCall, myStack, hs){
+// Online-Aktionsfeld: gleicher Aufbau wie in der Handerfassung (Fold / Check|Call / Bet|Raise, All-in,
+// Betrags-Box mit Bet-Raster des Tisches oder Numblock)
+let onlineBetBoxLabel = null;   // null = Betrags-Box zu; sonst "Bet" / "Raise"
+let onlineBetInputVal = '';
+function onlineBetGridProfile(){
+  const tbl = onlineTables.find(x => x.id === currentOnlineTableId);
+  const id = tbl && tbl.options && tbl.options.betGridId;
+  return id ? ((currentClub.betGridProfiles||[]).find(p => p.id === id) || null) : null;
+}
+function renderOnlineActionBar(toCall, myStack, hs, tbl){
+  const myBet = hs.bets ? Number(hs.bets[String(onlineMySeat)] || 0) : 0;
   const currentMaxBet = hs.bets ? Math.max(0, ...Object.values(hs.bets).map(Number)) : 0;
   const minRaiseTotal = currentMaxBet + (hs.last_raise_size || 0);
+  const stack = Number(myStack || 0);
+  const allInTotal = myBet + stack;
+  const canFullyCall = stack >= toCall - 0.001;
+  const canRaise = stack > toCall + 0.001;
+  const label = currentMaxBet > 0.0001 ? 'Raise' : 'Bet';
+  const btnStyle = 'flex:1;min-width:0;padding:8px 6px;';
+  let checkCallBtn, raiseBtn = '', allinBtn = '';
+  if(toCall > 0.001 && !canFullyCall){
+    checkCallBtn = `<button class="btn btn-primary" style="${btnStyle}" onclick="callSubmitAction('call')">All-in Call ${fmtChipPlain(stack)}</button>`;
+    raiseBtn = `<button class="btn btn-secondary action-disabled" style="${btnStyle}" disabled title="Stack reicht nicht für einen Call">${label} <span class="x-mark">✕</span></button>`;
+  } else {
+    checkCallBtn = toCall <= 0.001
+      ? `<button class="btn btn-primary" style="${btnStyle}" onclick="callSubmitAction('check')">Check</button>`
+      : `<button class="btn btn-primary" style="${btnStyle}" onclick="callSubmitAction('call')">Call ${fmtChipPlain(toCall)}</button>`;
+    if(canRaise){
+      raiseBtn = `<button class="btn btn-primary" style="${btnStyle}" onclick="openOnlineBetBox('${label}')">${label}</button>`;
+      allinBtn = `<button onclick="onlineAllIn(${allInTotal}, ${toCall})" style="display:flex;justify-content:space-between;align-items:center;width:100%;margin-top:8px;background:var(--felt-dark);color:#fff;border:none;border-radius:10px;padding:8px 18px;font-weight:800;font-size:14px;cursor:pointer;"><span>All-in</span><span>${fmtChipPlain(stack)}</span></button>`;
+    } else {
+      raiseBtn = `<button class="btn btn-secondary action-disabled" style="${btnStyle}" disabled title="Kein weiterer Stack für einen Raise">${label} <span class="x-mark">✕</span></button>`;
+    }
+  }
+  const boxHtml = onlineBetBoxLabel && canRaise ? onlineBetBoxHtml(onlineBetBoxLabel, minRaiseTotal, allInTotal, tbl) : '';
   return `
-    <div class="panel action-pane" style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;padding:16px;">
-      <button class="btn btn-secondary" onclick="callSubmitAction('fold')">Fold</button>
-      ${toCall <= 0 ? `<button class="btn btn-secondary" onclick="callSubmitAction('check')">Check</button>`
-                     : `<button class="btn btn-secondary" onclick="callSubmitAction('call')">Call ${formatMoney(toCall)}</button>`}
-      <input id="online-raise-input" type="number" min="${minRaiseTotal}" step="${hs.last_raise_size||1}" placeholder="Betrag (gesamt)" value="${onlineRaiseAmount}" style="width:120px;padding:11px 12px;border-radius:8px;border:1px solid var(--paper-line);background:var(--paper);color:var(--ink);" oninput="onlineRaiseAmount=this.value">
-      <button class="btn btn-primary" onclick="callSubmitAction(${toCall>0?`'raise'`:`'bet'`}, parseFloat(document.getElementById('online-raise-input').value))">${toCall>0?'Raise':'Bet'}</button>
+    <div style="font-weight:700;font-size:16px;margin:10px 0 14px;">Du bist am Zug</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+      <button class="btn btn-primary" style="${btnStyle}" onclick="onlineRequestFold(${toCall})">Fold</button>
+      ${checkCallBtn}
+      ${raiseBtn}
     </div>
-  `;
+    ${allinBtn}
+    <div id="bet-amount-box">${boxHtml}</div>`;
+}
+function onlineBetBoxHtml(label, minTo, allInTotal, tbl){
+  return `
+    <div style="max-width:440px;margin:16px auto 0;">
+      <div style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Min. ${label}: ${fmtChip(minTo)}</div>
+      <div id="bet-amount-grids">${betAmountGridsHtml()}</div>
+      <div class="field-row" style="align-items:flex-end;margin-top:14px;">
+        <div class="field" style="margin-bottom:0;"><label>Betrag (gesamt)</label><input id="bet-amount-input" type="number" min="0" step="0.05" value="${onlineBetInputVal}" oninput="onlineBetInputVal=this.value" placeholder="${fmtChip(minTo)}"></div>
+        <button class="btn btn-primary btn-sm" onclick="confirmOnlineBet(${minTo}, ${allInTotal})">${t('btn_confirm_amount')}</button>
+      </div>
+      <div id="bet-amount-error"></div>
+    </div>`;
+}
+function openOnlineBetBox(label){
+  onlineBetBoxLabel = label;
+  onlineBetInputVal = '';
+  betBoxAmountStr = ''; betBoxSelectedMain = null; betBoxSelectedRappen = null;
+  render();
+}
+function confirmOnlineBet(minTo, allInTotal){
+  const amt = Number(document.getElementById('bet-amount-input').value || 0);
+  const err = document.getElementById('bet-amount-error');
+  if(!amt || amt <= 0){ err.innerHTML = `<div class="error-msg" style="margin-top:8px;">Bitte einen Betrag eingeben.</div>`; return; }
+  if(amt < minTo - 0.001 && amt < allInTotal - 0.001){ err.innerHTML = `<div class="error-msg" style="margin-top:8px;">Mindestens ${fmtChip(minTo)} (oder All-in).</div>`; return; }
+  const total = Math.min(amt, allInTotal);
+  onlineBetBoxLabel = null; onlineBetInputVal = '';
+  const hs = onlineHandState;
+  const maxBet = hs && hs.bets ? Math.max(0, ...Object.values(hs.bets).map(Number)) : 0;
+  callSubmitAction(maxBet > 0.0001 ? 'raise' : 'bet', total);
+}
+function onlineAllIn(allInTotal, toCall){
+  onlineBetBoxLabel = null; onlineBetInputVal = '';
+  const hs = onlineHandState;
+  const maxBet = hs && hs.bets ? Math.max(0, ...Object.values(hs.bets).map(Number)) : 0;
+  callSubmitAction(maxBet > 0.0001 ? 'raise' : 'bet', allInTotal);
+}
+// Fold nur bestätigen, wenn man stattdessen kostenlos checken könnte (wie in der Handerfassung)
+function onlineRequestFold(toCall){
+  onlineBetBoxLabel = null;
+  if(toCall > 0.001){ callSubmitAction('fold'); return; }
+  document.getElementById('modal-root').innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this) closeModal()">
+      <div class="modal" style="max-width:380px;">
+        <h2>Wirklich folden?</h2>
+        <p class="lede" style="margin-top:-6px;">Du könntest kostenlos checken. Sicher, dass du folden willst?</p>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" onclick="closeModal(); callSubmitAction('check')">Check</button>
+          <button class="btn btn-primary" onclick="closeModal(); callSubmitAction('fold')">Ja, Fold</button>
+        </div>
+      </div>
+    </div>`;
 }
 
 async function sendLoginCode(){
@@ -10436,7 +10529,15 @@ function betGridTwoSectionsHtml(p, sb, interactive){
     </div>`;
 }
 function betAmountGridsHtml(){
-  const profile = activeBetGridProfile();
+  if(currentOnlineTableId){
+    const otbl = onlineTables.find(x => x.id === currentOnlineTableId);
+    const op = onlineBetGridProfile();
+    if(op){
+      const sbOnline = op.type==='cash' ? Number(op.targetSb || (otbl && otbl.small_blind) || 1) : Number((otbl && otbl.small_blind) || 1);
+      return betGridTwoSectionsHtml(op, sbOnline, true);
+    }
+  }
+  const profile = currentOnlineTableId ? null : activeBetGridProfile();
   if(profile){
     const s = getSession(handFlow.sessionId);
     const sb = profile.type==='cash' ? Number(profile.targetSb || s.sb || 1) : Number(s.sb || (handFlow.minRaiseIncrement/2) || 1);
@@ -10461,7 +10562,7 @@ function selectBetGridValue(v, section){
   else betBoxSelectedRappen = (betBoxSelectedRappen===v) ? null : v;
   const sum = (betBoxSelectedMain||0) + (betBoxSelectedRappen||0);
   const input = document.getElementById('bet-amount-input');
-  if(input) input.value = sum>0 ? sum.toFixed(2) : '';
+  if(input){ input.value = sum>0 ? sum.toFixed(2) : ''; if(currentOnlineTableId) onlineBetInputVal = input.value; }
   const gridsEl = document.getElementById('bet-amount-grids');
   if(gridsEl) gridsEl.innerHTML = betAmountGridsHtml();
 }
@@ -10483,7 +10584,7 @@ function numpadClear(){
 }
 function syncNumpadDisplay(){
   const input = document.getElementById('bet-amount-input');
-  if(input) input.value = betBoxAmountStr;
+  if(input){ input.value = betBoxAmountStr; if(currentOnlineTableId) onlineBetInputVal = betBoxAmountStr; }
   const disp = document.getElementById('numpad-display');
   if(disp) disp.textContent = betBoxAmountStr || '0';
 }
