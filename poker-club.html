@@ -1259,7 +1259,7 @@ function onlinePokerSeatHtml(slot, seatRow, seatNo, hs, isMe){
 
   const nameInnerHtml = `<div class="seat-name${isActor?' seat-turn-blink':''}" style="color:${textColor};transform:scale(${slot.nameScale});transform-origin:center;">${escapeHtml(fullName(displayObj))}</div>`;
   const statusBadge = folded ? `<div class="action-badge" style="background:#8A8A8A;">FOLD</div>` : (isAllIn ? `<div class="action-badge" style="background:var(--brass);">ALL-IN</div>` : '');
-  const stackRowHtml = `<div class="stack-row"><div class="seat-stack">${fmtChipPlain(seatRow.stack)}</div></div>${statusBadge}`;
+  const stackRowHtml = `<div class="stack-row"><div class="seat-stack">${fmtChipPlain(seatRow.stack)}</div></div>`;
   const stackInnerHtml = `<div class="${isActor?'seat-turn-blink':''}" style="color:${textColor};transform:scale(${slot.stackScale});transform-origin:center;">${stackRowHtml}</div>`;
   const standaloneNameHtml = useAbsoluteName ? `<div style="position:absolute;left:${slot.nameX}%;top:${slot.nameY}%;transform:translate(-50%,-50%);z-index:5;max-width:16cqw;">${nameInnerHtml}</div>` : '';
   const standaloneStackHtml = useAbsoluteStack ? `<div style="position:absolute;left:${slot.stackX}%;top:${slot.stackY}%;transform:translate(-50%,-50%);z-index:5;">${stackInnerHtml}</div>` : '';
@@ -1272,13 +1272,14 @@ function onlinePokerSeatHtml(slot, seatRow, seatNo, hs, isMe){
       ${!useAbsoluteName ? nameInnerHtml : ''}
       ${!useAbsoluteStack ? stackInnerHtml : ''}
     </div>`;
+  const statusOverlayHtml = statusBadge ? `<div style="position:absolute;left:${slot.left}%;top:${slot.top}%;transform:translate(-50%,0);margin-top:3.2cqw;z-index:7;pointer-events:none;">${statusBadge}</div>` : '';
   const standalonePosTagHtml = isDealer ? `<div class="pos-tag" style="position:absolute;left:${slot.posTagX}%;top:${slot.posTagY}%;transform:translate(-50%,-50%) rotate(${slot.posTagRotation}deg) scale(${slot.posTagScale});z-index:5;background:${tableSettings.posColor};color:#fff;">BTN</div>` : '';
 
   return `
     <div class="poker-seat${folded?' folded':''}${isActor?' active':''}" ${slot.seatAttrs||''} style="left:${slot.left}%;top:${slot.top}%;width:${avatarSizePercent(slot.avatarScale)}%;z-index:${slot.zAvatar!=null?slot.zAvatar:2};">
       ${avatarHtml(displayObj, avatarSeatStyleAttr(slot.avatarScale, slot.zAvatar))}
       ${!useAbsoluteBox ? platePlateHtml : ''}
-    </div>${useAbsoluteBox ? platePlateHtml : ''}${standaloneNameHtml}${standaloneStackHtml}${standaloneHoleCardsHtml}${standalonePosTagHtml}${onlineActionBubbleHtml(slot, seatNo)}`;
+    </div>${useAbsoluteBox ? platePlateHtml : ''}${standaloneNameHtml}${standaloneStackHtml}${standaloneHoleCardsHtml}${standalonePosTagHtml}${statusOverlayHtml}${onlineActionBubbleHtml(slot, seatNo)}`;
 }
 
 // Sprechblase mit der letzten Aktion — läuft per CSS-Animation und wird nach ~2,6 s unsichtbar.
