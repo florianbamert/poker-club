@@ -10377,7 +10377,7 @@ function renderSessionReplayTable(s){
   }
 
   return `
-    <div class="panel" style="${tableOuterBgStyleAttr()}">
+    <div class="panel" style="background:var(--felt-dark);">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
         <h3 style="color:#fff;margin:0;">🎬 Session-Replay — ${t('label_hand_number',{n:h.handNumber})}</h3>
         <div style="display:flex;gap:10px;align-items:center;">
@@ -10546,7 +10546,18 @@ function actionBadgeColor(action){
 function replayTableInnerHtml(s, h, seats, timeline, stepIndex, stepFnName){
   const state = replayStateAt(s, h, seats, timeline, stepIndex);
   const dIdx = h.dealerPlayerId ? seats.indexOf(h.dealerPlayerId) : 0;
-  const positions = seatPositions(seats.length);
+  // Gleiche Quelle wie der Live-Tisch: das für diese Session gewählte Tischdesign, mit denselben
+  // Slot-Positionen (Avatar, Sitzgrafik, Name, Stack, Holecards, Positions-Tag, Chips) und Ebenen.
+  const layoutForReplay = getActiveLayout(s.id);
+  ensureBoxImageAspect(layoutForReplay);
+  const assign = s.seatSlotAssignments || {};
+  const maxAssigned = Math.max(-1, ...seats.map(pid => assign[pid]!=null ? assign[pid] : -1));
+  const totalSlotsR = Math.max(resolveTotalSlots(s), seats.length, maxAssigned+1);
+  const allPositions = getSeatSlotsForRender(totalSlotsR, s.id);
+  const slotFor = (pid, i) => {
+    const idx = assign[pid];
+    return (idx!=null && allPositions[idx]) ? allPositions[idx] : (allPositions[i] || allPositions[0]);
+  };
   const showHole = state.street==='showdown' || state.street==='result';
   const chipProfileForReplay = s.chipProfileId ? getChipProfile(s.chipProfileId) : null;
 
@@ -10558,20 +10569,32 @@ function replayTableInnerHtml(s, h, seats, timeline, stepIndex, stepFnName){
     const offset = dIdx>=0 ? (i - dIdx + seats.length) % seats.length : i;
     const tag = positionLabel(offset, seats.length);
     const isMainTag = tag==='BTN' || tag==='SB' || tag==='BB' || tag==='BTN/SB';
-    const pos = positions[i];
+    const pos = slotFor(pid, i);
     const cards = showHole && h.holeCards && h.holeCards[pid] && h.holeCards[pid].length===2 ? h.holeCards[pid] : null;
     const remainingStack = h.startStacks && h.startStacks[pid]!=null ? (h.startStacks[pid] - (state.totalContrib[pid]||0)) : null;
+    const useAbsoluteBox = pos.boxX != null && pos.boxY != null;
+    const useAbsoluteName = pos.nameX != null && pos.nameY != null;
+    const useAbsoluteStack = pos.stackX != null && pos.stackY != null;
+    const nameInnerHtml = `<div class="seat-name" style="color:${pos.textColor};transform:scale(${pos.nameScale});transform-origin:center;">${escapeHtml(fullName(pl))}</div>`;
+    const stackInnerHtml = remainingStack!=null ? `<div style="color:${pos.textColor};transform:scale(${pos.stackScale});transform-origin:center;"><div class="stack-row"><div class="seat-stack">${fmtChip(remainingStack, s)}</div></div></div>` : '';
+    const standaloneNameHtml = useAbsoluteName ? `<div style="position:absolute;left:${pos.nameX}%;top:${pos.nameY}%;transform:translate(-50%,-50%);z-index:5;max-width:16cqw;">${nameInnerHtml}</div>` : '';
+    const standaloneStackHtml = (useAbsoluteStack && stackInnerHtml) ? `<div style="position:absolute;left:${pos.stackX}%;top:${pos.stackY}%;transform:translate(-50%,-50%);z-index:5;">${stackInnerHtml}</div>` : '';
+    // Aufgedeckte Hole-Cards beim Showdown: gleicher Anker (-55%) wie im Live-Tisch beim Showdown.
+    const standaloneHoleCardsHtml = cards ? `<div class="seat-holecards${pos.holeCardsCompact?' compact':''}" style="position:absolute;left:${pos.holeCardsX}%;top:${pos.holeCardsY}%;transform:translate(-50%,-55%) scale(${pos.holeCardsScale});z-index:${pos.zHoleCards!=null?pos.zHoleCards:3};">${cards.map(cardChipHtml).join('')}</div>` : '';
+    const platePlateHtml = `
+        <div class="seat-plate" style="${seatPlateBgStyleAttr(pos, useAbsoluteBox)}">
+          ${!useAbsoluteName ? nameInnerHtml : ''}
+          ${!useAbsoluteStack ? stackInnerHtml : ''}
+        </div>`;
+    const standalonePosTagHtml = `<div class="pos-tag" style="position:absolute;left:${pos.posTagX}%;top:${pos.posTagY}%;transform:translate(-50%,-50%) rotate(${pos.posTagRotation}deg) scale(${pos.posTagScale});z-index:5;background:${isMainTag ? tableSettings.posColor : hexToRgba(tableSettings.posColor,.28)};color:${isMainTag ? '#fff' : tableSettings.posColor};">${tag}</div>`;
+    const actionBadgeHtml = (isActor && state.lastAction) ? `<div style="position:absolute;left:${pos.left}%;top:${pos.top}%;transform:translate(-50%,0);margin-top:3.2cqw;z-index:7;"><div class="action-badge" style="background:${actionBadgeColor(state.lastAction)};">${state.lastAction.toUpperCase()}</div></div>` : '';
     return `
       <div class="poker-seat${folded?' folded':''}${isActor?' active':''}" style="left:${pos.left}%;top:${pos.top}%;width:${avatarSizePercent(pos.avatarScale)}%;z-index:${pos.zAvatar!=null?pos.zAvatar:2};">
-        <div class="pos-tag" style="position:absolute;left:50%;top:-22px;transform:translateX(-50%);background:${isMainTag ? tableSettings.posColor : hexToRgba(tableSettings.posColor,.28)};color:${isMainTag ? '#fff' : tableSettings.posColor};">${tag}</div>
-        ${avatarHtml(pl, "margin:0 auto;")}
-        <div class="seat-name" style="color:${tableSettings.nameColor};">${escapeHtml(fullName(pl))}</div>
-        ${isActor && state.lastAction ? `<div class="action-badge" style="background:${actionBadgeColor(state.lastAction)};">${state.lastAction.toUpperCase()}</div>` : ''}
-        ${cards ? `<div class="seat-holecards">${cards.map(cardChipHtml).join('')}</div>` : ''}
-        ${remainingStack!=null ? `<div class="seat-stack">${fmtChip(remainingStack, s)}</div>` : ''}
-      </div>`;
+        ${avatarHtml(pl, avatarSeatStyleAttr(pos.avatarScale, pos.zAvatar))}
+        ${!useAbsoluteBox ? platePlateHtml : ''}
+      </div>${useAbsoluteBox ? platePlateHtml : ''}${standaloneNameHtml}${standaloneStackHtml}${standaloneHoleCardsHtml}${standalonePosTagHtml}${actionBadgeHtml}`;
   }).join('')
-  + seats.map((pid,i) => betLineChipHtml(positions[i], state.streetContrib[pid]||0, chipProfileForReplay, s)).join('');
+  + seats.map((pid,i) => betLineChipHtml(slotFor(pid, i), state.streetContrib[pid]||0, chipProfileForReplay, s)).join('');
 
   const potNow = Object.values(state.totalContrib).reduce((a,b)=>a+b,0);
   const ev = timeline[stepIndex];
@@ -10597,14 +10620,20 @@ function replayTableInnerHtml(s, h, seats, timeline, stepIndex, stepFnName){
   }
 
   return `
-    <div class="poker-table-oval" style="${tableFeltStyleAttr()}">
-      ${(() => { const bl = getActiveLayout(s.id); return (bl && !bl.bettingLineHidden) ? bettingLineOverlayHtml(bl) : ''; })()}
+    <div class="table-bg-wrap" style="${tableOuterBgStyleAttr(s.id, layoutForReplay || {})}padding:10px;">
+    <div class="poker-table-oval" style="${layoutForReplay ? tableFeltStyleAttr(layoutForReplay) : tableFeltStyleAttr()}">
+      ${(layoutForReplay && !layoutForReplay.bettingLineHidden) ? bettingLineOverlayHtml(layoutForReplay) : ''}
       ${seatsHtml}
-      <div class="pot-center${justCollected ? ' collecting' : ''}">
-        ${state.board.length ? `<div class="board-cards">${state.board.map(cardChipHtml).join('')}</div>` : ''}
-        <div class="amt">${fmtChipPlain(potNow, s)}</div>
-        <div class="lbl">Pot</div>
+      <div class="board-center" style="${boardCenterStyleAttr(s.id)}">
+        <div style="${boardScaleStyleAttr(seats.length, s.id)}">
+          ${state.board.length ? `<div class="board-cards">${state.board.map(cardChipHtml).join('')}</div>` : ''}
+        </div>
       </div>
+      <div class="pot-center${justCollected ? ' collecting' : ''}" style="${potCenterStyleAttr(seats.length, s.id)}">
+        ${potNow > 0.0001 ? chipStackHtml(potNow, chipProfileForReplay) : ''}
+        <div class="amt">${fmtChipPlain(potNow, s)}</div>
+      </div>
+    </div>
     </div>
     <div style="text-align:center;color:#fff;font-weight:600;margin-top:14px;min-height:20px;">${captionHtml}</div>
     ${resultDetailHtml}
