@@ -9148,31 +9148,25 @@ function undoLastHandAction(){
   handFlow = JSON.parse(snap, (k,v) => (v && v.__set) ? new Set(v.__set) : v);
   render();
 }
-// Fold mit Rückfrage, wenn er (fast) nie sinnvoll ist: wenn der Spieler gratis checken kann, oder als
-// SB/BB preflop, solange nur gelimpt wurde (kein Raise). Dann: "Wirklich folden oder lieber Check/Call?"
+// Fold mit Rückfrage NUR, wenn der Spieler gratis checken könnte (z.B. BB nach reinen Limps) — dann ist
+// ein Fold fast sicher ein Versehen. Muss er zum Weiterspielen Chips nachlegen (Call), ist Fold eine
+// normale Entscheidung und wird ohne Rückfrage ausgeführt.
 function requestFold(){
   if(!canWrite() || !handFlow) return;
   const pid = handFlow.queue[0];
   if(!pid){ handAction('fold'); return; }
   const toCall = handFlow.currentBet - (handFlow.streetContrib[pid]||0);
-  const isBlind = pid===handFlow.sbId || pid===handFlow.bbId;
-  const onlyLimps = handFlow.street==='preflop' && handFlow.raiseCount===0;
-  const canCheck = toCall <= 0.001;
-  if(!(canCheck || (isBlind && onlyLimps))){ handAction('fold'); return; }
+  if(toCall > 0.001){ handAction('fold'); return; }
   const pl = getPlayer(pid);
   const name = pl ? escapeHtml(fullName(pl)) : '';
-  const altLabel = canCheck ? 'Check' : ('Call ' + fmtChipPlain(toCall));
-  const why = canCheck
-    ? 'Es wurde nicht erhöht — er könnte kostenlos checken.'
-    : 'Es wurde nur gelimpt — der Call kostet nur ' + fmtChipPlain(toCall) + '.';
   document.getElementById('modal-root').innerHTML = `
     <div class="modal-backdrop" onclick="if(event.target===this) closeModal()">
       <div class="modal" style="max-width:380px;">
         <h2>Wirklich folden?</h2>
-        <p class="lede" style="margin-top:-6px;"><strong>${name}</strong> — ${why} Sind Sie sicher, dass Sie folden wollen?</p>
+        <p class="lede" style="margin-top:-6px;"><strong>${name}</strong> könnte kostenlos checken. Sind Sie sicher, dass Sie folden wollen?</p>
         <div class="modal-actions" style="flex-wrap:wrap;gap:8px;">
           <button class="btn btn-secondary" onclick="closeModal(); handAction('fold')">Ja, Fold</button>
-          <button class="btn btn-primary" onclick="closeModal(); handAction('checkcall')">${altLabel}</button>
+          <button class="btn btn-primary" onclick="closeModal(); handAction('checkcall')">Check</button>
         </div>
       </div>
     </div>`;
