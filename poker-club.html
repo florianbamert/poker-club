@@ -1083,7 +1083,7 @@ function renderOnlineTableView(){
     const seatRow = tbl.seats.find(s => s.seat_no === seatNo);
     const isMe = seatNo === onlineMySeat;
     const bet = hs && hs.bets ? (hs.bets[String(seatNo)] || 0) : 0;
-    const slotView = Object.assign({}, slots[seatNo], { seatAttrs: seatDataAttrs(seatNo, slots.viewMeta, onlineMySeat) });
+    const slotView = Object.assign({}, slots[seatNo], { seatAttrs: seatDataAttrs(seatNo, slots.viewMeta, onlineMySeat, seatRow && seatRow.player_id) });
     return onlinePokerSeatHtml(slotView, seatRow, seatNo, hs, isMe)
       + (seatRow && bet > 0.0001 ? betLineChipHtml(slots[seatNo], bet, null) : '');
   }).join('');
@@ -7020,29 +7020,50 @@ function layerZIndex(layout, type){
   return 2 + (idx>=0 ? idx : 0); // ergibt 2, 3 oder 4
 }
 /* ================= Persönliche Tisch-Drehung (nur Darstellung) =================
-   Pro Person und pro Tischgrösse (Heads-up / 6-Max / 10-Max) lässt sich der Tisch visuell drehen:
-   Rechtsklick (am Handy langes Drücken) auf einen Sitz -> Menü. Die Spiel-Logik (Sitznummern,
-   Reihenfolge, Positionen) bleibt unverändert — nur welcher Sitz an welcher Stelle gezeichnet wird.
-   Gespeichert pro Gerät/Login in localStorage. Der Table-Designer nutzt die Drehung bewusst NICHT. */
+   Pro Person und pro Tischgrösse (Heads-up / 6-Max / 10-Max) lässt sich der Tisch visuell so drehen,
+   dass der EIGENE Sitz an einer Wunschposition liegt: Rechtsklick (am Handy langes Drücken) auf die
+   Position, wo man sitzen möchte -> "Ich möchte hier sitzen". Die Spiel-Logik (Sitznummern, Reihenfolge,
+   Positionen) bleibt unverändert — nur welcher Sitz an welcher Stelle gezeichnet wird.
+   Wer "ich" ist: das mit dem Login verknüpfte Spielerprofil (myPlayer), sonst ein einmal per Menü
+   gewählter Spieler ("Das bin ich"). Gespeichert pro Gerät/Login in localStorage.
+   Der Table-Designer nutzt die Drehung bewusst NICHT. */
 function seatViewSizeKey(n){ return n<=2 ? '2' : (n<=6 ? '6' : '10'); }
 function seatViewStorageKey(){ return 'chipmate_seatview_' + (currentUser ? currentUser.id : ''); }
 function getSeatViewPrefs(){
   try{ return JSON.parse(localStorage.getItem(seatViewStorageKey()) || '{}') || {}; }catch(e){ return {}; }
 }
 function getSeatViewPref(key){
-  const all = getSeatViewPrefs();
-  const p = all[key] || {};
-  return { rot: Number.isFinite(p.rot) ? p.rot : 0, hero: !!p.hero };
+  const p = getSeatViewPrefs()[key] || {};
+  return { hero: !!p.hero, target: Number.isFinite(p.target) ? p.target : null };
+}
+function saveSeatViewPrefs(all){ try{ localStorage.setItem(seatViewStorageKey(), JSON.stringify(all)); }catch(e){} }
+function refreshAllTableViews(){
+  render();
+  if(typeof replayState !== 'undefined' && replayState && document.querySelector('#modal-root .modal')) renderReplayModal();
 }
 function setSeatViewPref(key, patch){
   const all = getSeatViewPrefs();
   all[key] = Object.assign(getSeatViewPref(key), patch);
-  try{ localStorage.setItem(seatViewStorageKey(), JSON.stringify(all)); }catch(e){}
-  render();
-  if(typeof replayState !== 'undefined' && replayState && document.querySelector('#modal-root .modal')) renderReplayModal();
+  saveSeatViewPrefs(all);
+  refreshAllTableViews();
+}
+// Wer bin "ich" am Tisch? Verknüpftes Spielerprofil, sonst per Menü gewählter Spieler (pro Club).
+function heroPlayerId(){
+  const mp = myPlayer();
+  if(mp) return mp.id;
+  const all = getSeatViewPrefs();
+  return (all.heroByClub && currentCode && all.heroByClub[currentCode]) || null;
+}
+function setHeroPlayerId(pid){
+  const all = getSeatViewPrefs();
+  if(!all.heroByClub) all.heroByClub = {};
+  if(currentCode) all.heroByClub[currentCode] = pid;
+  saveSeatViewPrefs(all);
+  refreshAllTableViews();
 }
 // Wie getSeatSlotsForRender, aber gedreht: der Slot mit Index a (tatsächlicher Sitz) bekommt die
 // Position/Darstellung des Slots (a + rot) mod n. mySlot = Index des eigenen Sitzes (oder null).
+// Ist "Mein Sitz an Wunschposition" aktiv und der eigene Sitz bekannt, gilt rot = Wunschposition - mySlot.
 function getSeatSlotsForView(seatCount, sessionId, layoutOverride, mySlot){
   const raw = getSeatSlotsForRender(seatCount, sessionId, layoutOverride);
   const n = raw.length;
@@ -7053,35 +7074,50 @@ function getSeatSlotsForView(seatCount, sessionId, layoutOverride, mySlot){
   raw.forEach((p,i) => {
     if(p.top > raw[B].top + 0.01 || (Math.abs(p.top - raw[B].top) <= 0.01 && Math.abs(p.left-50) < Math.abs(raw[B].left-50))) B = i;
   });
-  let rot = ((pref.rot % n) + n) % n;
-  if(pref.hero && mySlot != null && mySlot >= 0 && mySlot < n) rot = (((B - mySlot) % n) + n) % n;
+  let rot = 0;
+  if(pref.hero && mySlot != null && mySlot >= 0 && mySlot < n){
+    const target = (pref.target != null && pref.target < n) ? pref.target : B;
+    rot = (((target - mySlot) % n) + n) % n;
+  }
   const R = raw.map((_, a) => raw[(a + rot) % n]);
   R.viewMeta = { n, key, bottom: B, rot };
   return R;
 }
-function seatDataAttrs(a, meta, me){
+// a = tatsächlicher Sitz-Index, pid = Spieler auf diesem Sitz (oder ''), me = Sitz-Index des Helden (oder null)
+function seatDataAttrs(a, meta, me, pid){
   if(a == null || !meta) return '';
-  return `data-seat-slot="${a}" data-seat-n="${meta.n}" data-seat-key="${meta.key}" data-seat-bottom="${meta.bottom}" data-seat-me="${me!=null ? me : ''}"`;
+  const disp = (a + meta.rot) % meta.n;
+  return `data-seat-slot="${a}" data-seat-disp="${disp}" data-seat-n="${meta.n}" data-seat-key="${meta.key}" data-seat-me="${me!=null ? me : ''}" data-seat-pid="${pid||''}"`;
 }
 function closeSeatMenu(){ const m = document.getElementById('seat-view-menu'); if(m) m.remove(); }
 function showSeatMenu(x, y, el){
   closeSeatMenu();
-  const a = Number(el.dataset.seatSlot), n = Number(el.dataset.seatN), B = Number(el.dataset.seatBottom);
+  const d = Number(el.dataset.seatDisp);
   const key = el.dataset.seatKey;
   const me = el.dataset.seatMe;
+  const pid = el.dataset.seatPid;
   const pref = getSeatViewPref(key);
-  const rotFor = (((B - a) % n) + n) % n;
   const label = key==='2' ? 'Heads-up' : key+'-Max';
+  const heroKnown = !!heroPlayerId() || me!=='';
+  const linked = !!myPlayer();
+  const clickedPl = pid ? getPlayer(pid) : null;
   const menu = document.createElement('div');
   menu.id = 'seat-view-menu';
-  menu.style.cssText = `position:fixed;z-index:20000;left:${Math.min(x, window.innerWidth-260)}px;top:${Math.min(y, window.innerHeight-170)}px;background:var(--tile,#fff);color:var(--ink,#222);border:1px solid var(--paper-line,#ddd);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.3);padding:6px;min-width:240px;font-size:13px;`;
+  menu.style.cssText = `position:fixed;z-index:20000;left:${Math.min(x, window.innerWidth-290)}px;top:${Math.min(y, window.innerHeight-220)}px;background:var(--tile,#fff);color:var(--ink,#222);border:1px solid var(--paper-line,#ddd);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.3);padding:6px;min-width:260px;max-width:280px;font-size:13px;`;
   const item = (txt, fn, disabled) => `<button ${disabled?'disabled':''} onclick="${fn}" style="display:block;width:100%;text-align:left;background:none;border:none;padding:8px 10px;border-radius:7px;cursor:${disabled?'default':'pointer'};color:inherit;opacity:${disabled?.45:1};font:inherit;">${txt}</button>`;
-  menu.innerHTML = `
-    <div style="padding:4px 10px 6px;font-size:11px;color:var(--ink-soft,#777);font-weight:700;text-transform:uppercase;">Ansicht (${label})</div>
-    ${item('🪑 Hier sitzen — diesen Sitz nach unten drehen', `closeSeatMenu();setSeatViewPref('${key}',{rot:${rotFor},hero:false})`)}
-    ${item(pref.hero ? '✓ Mein Sitz immer unten (bevorzugter Sitz)' : '⭐ Mein Sitz immer unten (bevorzugter Sitz)', `closeSeatMenu();setSeatViewPref('${key}',{hero:${!pref.hero}})`, me==='')}
-    ${me==='' ? '<div style="padding:0 10px 4px;font-size:11px;color:var(--ink-soft,#777);">Du sitzt an diesem Tisch nicht (bzw. dein Login ist keinem Spieler zugeordnet).</div>' : ''}
-    ${item('↺ Standardansicht', `closeSeatMenu();setSeatViewPref('${key}',{rot:0,hero:false})`, pref.rot===0 && !pref.hero)}`;
+  const heroPl = heroPlayerId() ? getPlayer(heroPlayerId()) : null;
+  let html = `<div style="padding:4px 10px 6px;font-size:11px;color:var(--ink-soft,#777);font-weight:700;text-transform:uppercase;">Ansicht (${label})</div>`;
+  if(!heroKnown){
+    html += clickedPl
+      ? item(`🙋 Das bin ich: ${escapeHtml(fullName(clickedPl))}`, `closeSeatMenu();setHeroPlayerId('${pid}')`)
+      : `<div style="padding:4px 10px;font-size:12px;color:var(--ink-soft,#777);">Klicke auf deinen eigenen Sitz und wähle "Das bin ich".</div>`;
+  } else {
+    html += item(`🪑 Ich möchte hier sitzen${heroPl ? ' ('+escapeHtml(fullName(heroPl))+')' : ''}`, `closeSeatMenu();setSeatViewPref('${key}',{hero:true,target:${d}})`, me==='');
+    if(me==='') html += `<div style="padding:0 10px 4px;font-size:11px;color:var(--ink-soft,#777);">Du sitzt an diesem Tisch gerade nicht.</div>`;
+    if(!linked && clickedPl && clickedPl.id !== heroPlayerId()) html += item(`🙋 Das bin ich: ${escapeHtml(fullName(clickedPl))}`, `closeSeatMenu();setHeroPlayerId('${pid}')`);
+  }
+  html += item('↺ Standardansicht', `closeSeatMenu();setSeatViewPref('${key}',{hero:false,target:null})`, !pref.hero);
+  menu.innerHTML = html;
   document.body.appendChild(menu);
 }
 (function bindSeatMenu(){
@@ -9899,8 +9935,8 @@ function renderHandFlowUI(s){
   const canAddPlayer = s.status==='open' && handFlow.seats.length < 10 && currentClub.players.some(p => !p.archived && !s.participants.find(x=>x.playerId===p.id));
   ensureSeatSlotAssignments(s);
   const totalSlots = resolveTotalSlots(s);
-  const myPlayerLive = myPlayer();
-  const mySlotLive = (myPlayerLive && s.seatSlotAssignments && s.seatSlotAssignments[myPlayerLive.id]!=null && handFlow.seats.includes(myPlayerLive.id)) ? s.seatSlotAssignments[myPlayerLive.id] : null;
+  const heroLive = heroPlayerId();
+  const mySlotLive = (heroLive && s.seatSlotAssignments && s.seatSlotAssignments[heroLive]!=null && handFlow.seats.includes(heroLive)) ? s.seatSlotAssignments[heroLive] : null;
   const allPositions = getSeatSlotsForView(totalSlots, s.id, undefined, mySlotLive);
   ensureBoxImageAspect(getActiveLayout(s.id));
   const busyIds = new Set([...handFlow.seats, ...bustedGhosts.map(p=>p.playerId), ...pendingJoiners.map(p=>p.playerId)]);
@@ -9954,7 +9990,7 @@ function renderHandFlowUI(s){
     const isShowdownReveal = handFlow.street === 'showdown';
     const holeCardsVAnchor = isShowdownReveal ? -55 : -20;
     const standaloneHoleCardsHtml = (!folded) ? `<div class="seat-holecards${pos.holeCardsCompact?' compact':''}" style="position:absolute;left:${pos.holeCardsX}%;top:${pos.holeCardsY}%;transform:translate(-50%,${holeCardsVAnchor}%) scale(${pos.holeCardsScale});z-index:${pos.zHoleCards!=null?pos.zHoleCards:3};">${holeCardsInner}</div>` : '';
-    const seatAttrsLive = seatDataAttrs(s.seatSlotAssignments[pid], allPositions.viewMeta, mySlotLive);
+    const seatAttrsLive = seatDataAttrs(s.seatSlotAssignments[pid], allPositions.viewMeta, mySlotLive, pid);
     const platePlateHtml = `
         <div class="seat-plate" ${seatAttrsLive} style="${seatPlateBgStyleAttr(pos, useAbsoluteBox)}">
           ${!useAbsoluteName ? nameInnerHtml : ''}
@@ -10689,8 +10725,8 @@ function replayTableInnerHtml(s, h, seats, timeline, stepIndex, stepFnName){
   const assign = s.seatSlotAssignments || {};
   const maxAssigned = Math.max(-1, ...seats.map(pid => assign[pid]!=null ? assign[pid] : -1));
   const totalSlotsR = Math.max(resolveTotalSlots(s), seats.length, maxAssigned+1);
-  const myPlayerRp = myPlayer();
-  const mySlotRp = (myPlayerRp && seats.includes(myPlayerRp.id) && assign[myPlayerRp.id]!=null) ? assign[myPlayerRp.id] : null;
+  const heroRp = heroPlayerId();
+  const mySlotRp = (heroRp && seats.includes(heroRp) && assign[heroRp]!=null) ? assign[heroRp] : null;
   const allPositions = getSeatSlotsForView(totalSlotsR, s.id, undefined, mySlotRp);
   const slotIdxFor = (pid, i) => {
     const idx = assign[pid];
@@ -10720,7 +10756,7 @@ function replayTableInnerHtml(s, h, seats, timeline, stepIndex, stepFnName){
     const standaloneStackHtml = (useAbsoluteStack && stackInnerHtml) ? `<div style="position:absolute;left:${pos.stackX}%;top:${pos.stackY}%;transform:translate(-50%,-50%);z-index:5;">${stackInnerHtml}</div>` : '';
     // Aufgedeckte Hole-Cards beim Showdown: gleicher Anker (-55%) wie im Live-Tisch beim Showdown.
     const standaloneHoleCardsHtml = cards ? `<div class="seat-holecards${pos.holeCardsCompact?' compact':''}" style="position:absolute;left:${pos.holeCardsX}%;top:${pos.holeCardsY}%;transform:translate(-50%,-55%) scale(${pos.holeCardsScale});z-index:${pos.zHoleCards!=null?pos.zHoleCards:3};">${cards.map(cardChipHtml).join('')}</div>` : '';
-    const seatAttrsRp = seatDataAttrs(slotIdxFor(pid, i), allPositions.viewMeta, mySlotRp);
+    const seatAttrsRp = seatDataAttrs(slotIdxFor(pid, i), allPositions.viewMeta, mySlotRp, pid);
     const platePlateHtml = `
         <div class="seat-plate" ${seatAttrsRp} style="${seatPlateBgStyleAttr(pos, useAbsoluteBox)}">
           ${!useAbsoluteName ? nameInnerHtml : ''}
