@@ -1865,16 +1865,26 @@ function setHiddenClubs(list){
 async function getMyClubs(){
   if(!currentUser) return [];
   try{
-    const { data, error } = await sb.from('club_memberships')
-      .select('created_at, clubs(id,name,code)')
+    // Zwei einfache Abfragen statt eines eingebetteten Joins — robuster gegenüber Schema-Cache/
+    // Beziehungs-Erkennung von PostgREST; Fehler werden sichtbar protokolliert statt verschluckt.
+    const { data: mems, error: memErr } = await sb.from('club_memberships')
+      .select('club_id, created_at')
       .eq('user_id', currentUser.id)
       .order('created_at', { ascending:false });
-    if(error || !data) return [];
+    if(memErr){ console.error('my clubs (memberships) failed', memErr); showToast('Clubs konnten nicht geladen werden: ' + memErr.message); return []; }
+    if(!mems || !mems.length) return [];
+    const { data: clubs, error: clubErr } = await sb.from('clubs')
+      .select('id,name,code')
+      .in('id', mems.map(m => m.club_id));
+    if(clubErr){ console.error('my clubs (clubs) failed', clubErr); showToast('Clubs konnten nicht geladen werden: ' + clubErr.message); return []; }
+    const byId = {};
+    (clubs||[]).forEach(c => { byId[c.id] = c; });
     const hidden = getHiddenClubs();
-    return data
-      .filter(m => m.clubs && !hidden.includes(m.clubs.code))
-      .map(m => ({ code: m.clubs.code, name: m.clubs.name }));
-  }catch(e){ return []; }
+    return mems
+      .map(m => byId[m.club_id])
+      .filter(c => c && !hidden.includes(c.code))
+      .map(c => ({ code: c.code, name: c.name }));
+  }catch(e){ console.error('my clubs failed', e); return []; }
 }
 async function rememberClub(code, name){
   // Nur noch ein "wieder einblenden", falls der Club zuvor auf diesem Gerät ausgeblendet wurde.
