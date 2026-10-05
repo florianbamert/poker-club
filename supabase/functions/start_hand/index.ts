@@ -29,7 +29,7 @@ function json(body: unknown, status = 200): Response {
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS_HEADERS });
   try {
-    const { table_id } = await req.json();
+    const { table_id, expected_hand_no } = await req.json() as { table_id: string; expected_hand_no?: number | null };
     if (!table_id) return json({ error: 'table_id fehlt' }, 400);
 
     const authHeader = req.headers.get('Authorization') ?? '';
@@ -43,11 +43,19 @@ Deno.serve(async (req) => {
     const { data: mySeat } = await admin.from('online_seats').select('seat_no').eq('table_id', table_id).eq('user_id', user.id).maybeSingle();
     if (!mySeat) return json({ error: 'not_seated' }, 403);
 
+    // Schutz gegen doppeltes Starten (z.B. wenn beide Clients automatisch die nächste Hand anstossen):
+    // nur starten, wenn keine Hand läuft und — falls angegeben — die erwartete Hand die letzte war.
+    const { data: cur } = await admin.from('online_hand_state').select('phase, hand_no').eq('table_id', table_id).maybeSingle();
+    if (cur && cur.phase && !['done', 'waiting'].includes(cur.phase)) return json({ ok: true, skipped: 'hand_running' });
+    if (cur && expected_hand_no != null && Number(cur.hand_no) !== Number(expected_hand_no)) return json({ ok: true, skipped: 'already_started' });
+
     const { error: dealErr } = await admin.rpc('deal_hand', { p_table_id: table_id });
     if (dealErr) return json({ error: dealErr.message }, 400);
 
     const { data: state } = await admin.from('online_hand_state').select('*').eq('table_id', table_id).single();
     if (!state) return json({ error: 'state_missing_after_deal' }, 500);
+    // Aktionsprotokoll der neuen Hand leeren (Spalte "actions" existiert nur, wenn chipmate_online_hand_actions.sql gelaufen ist)
+    if ('actions' in state) await admin.from('online_hand_state').update({ actions: [] }).eq('table_id', table_id);
 
     const publicChannel = admin.channel(`table:${table_id}:public`);
     await publicChannel.send({

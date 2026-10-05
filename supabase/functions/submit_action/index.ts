@@ -77,6 +77,19 @@ Deno.serve(async (req) => {
     const newState = result.state!;
     const newStacks = result.stacks!;
 
+    // Aktionsprotokoll (fürs Speichern der Hand im Club): nur wenn die Spalte "actions" existiert
+    const hasActionsCol = 'actions' in stateRow;
+    const actionLog: Array<Record<string, unknown>> = hasActionsCol && Array.isArray(stateRow.actions) ? stateRow.actions.slice() : [];
+    {
+      const betsBefore = (stateRow.bets || {}) as Record<string, number>;
+      const maxBet = Math.max(0, ...Object.values(betsBefore).map(Number));
+      const myBetBefore = Number(betsBefore[String(actingSeat)] || 0);
+      let logAmount: number | null = null;
+      if (action === 'bet' || action === 'raise') logAmount = Number(amount);
+      else if (action === 'call') logAmount = Math.min(maxBet, myBetBefore + seats[actingSeat].stack);
+      actionLog.push({ seat: actingSeat, street: stateRow.phase, action, amount: logAmount });
+    }
+
     // Optimistischer Schreibschutz: nur anwenden, wenn seit dem Lesen niemand
     // anders geschrieben hat.
     const { data: written, error: updateErr } = await admin
@@ -86,6 +99,7 @@ Deno.serve(async (req) => {
         current_seat: newState.current_seat, bets: newState.bets, acted: newState.acted,
         folded: newState.folded, all_in: newState.all_in, contributions: newState.contributions,
         last_raise_size: newState.last_raise_size, last_aggressor: newState.last_aggressor,
+        ...(hasActionsCol ? { actions: actionLog } : {}),
         updated_at: new Date().toISOString(),
       })
       .eq('table_id', table_id)
@@ -135,7 +149,14 @@ Deno.serve(async (req) => {
       for (const s of revealSeats) revealedHoleCards[s] = stateRow.hole_cards[String(s)];
       await admin.from('online_hand_history').insert({
         table_id, hand_no: stateRow.hand_no,
-        summary: { board: newState.board, revealed_hole_cards: revealedHoleCards, payouts, phase_ended: newState.phase },
+        summary: {
+          board: newState.board, revealed_hole_cards: revealedHoleCards, payouts, phase_ended: newState.phase,
+          // Zusatzdaten fürs Übernehmen in die gespeicherten Hände (Replay)
+          actions: actionLog, seat_order: seatOrder, dealer_seat: stateRow.dealer_seat,
+          contributions: newState.contributions,
+          start_stacks: Object.fromEntries(seatOrder.map(sn => [String(sn), (newStacks[sn] ?? seats[sn].stack) + Number((newState.contributions || {})[String(sn)] || 0)])),
+          pot_total: Object.values(newState.contributions || {}).reduce((a: number, b) => a + Number(b), 0),
+        },
       });
       await admin.from('online_hand_state').update({ phase: 'done', pot: 0, revealed_hole_cards: revealedHoleCards }).eq('table_id', table_id);
 

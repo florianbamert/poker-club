@@ -676,6 +676,7 @@ function cleanupOnlineChannels(){
 
 function resetOnlineTableState(){
   cleanupOnlineChannels();
+  onlineAutoKey = '';
   onlineBetBoxLabel = null; onlineBetInputVal = '';
   currentOnlineTableId = null;
   onlineMySeat = null;
@@ -862,6 +863,35 @@ async function refreshOnlineTableAndSeat(){
     onlineMyHoleCards = cards || null;
   }
   render();
+  scheduleAutoNextHand();
+}
+
+// Nächste Hand startet automatisch: wer am niedrigsten Platz (mit Stack) sitzt, stösst sie nach ein paar Sekunden an;
+// alle anderen springen später ein, falls das nicht klappt. Die Edge Function lässt jede Hand nur einmal starten.
+let onlineAutoKey = '';
+function scheduleAutoNextHand(){
+  const tableId = currentOnlineTableId;
+  const tbl = onlineTables.find(x => x.id === tableId);
+  const hs = onlineHandState;
+  if(!tbl || tbl.status === 'finished' || !hs || hs.phase !== 'done' || onlineMySeat == null) return;
+  const key = tableId + ':' + hs.hand_no;
+  if(onlineAutoKey === key) return;
+  onlineAutoKey = key;
+  const handNo = Number(hs.hand_no);
+  const run = async (isFallback) => {
+    if(currentOnlineTableId !== tableId) return;
+    await refreshOnlineTableAndSeat();
+    const cur = onlineHandState;
+    if(!cur || Number(cur.hand_no) !== handNo || cur.phase !== 'done') return;   // läuft schon
+    const t = onlineTables.find(x => x.id === tableId);
+    const stacked = (t ? t.seats : []).filter(x => x.user_id && Number(x.stack || 0) > 0);
+    if(stacked.length < 2){ onlineAutoKey = ''; return; }     // z.B. wer pleite ist, muss nachkaufen — danach wird neu geplant
+    const starter = Math.min(...stacked.map(x => x.seat_no));
+    if(!isFallback && starter !== onlineMySeat) return;
+    await callStartHand(handNo);
+  };
+  setTimeout(() => run(false), 4500);
+  setTimeout(() => run(true), 10000);
 }
 
 // Letzte Aktionen als Sprechblasen am Sitz (Fold / Check / Call / Bet / Raise / 3-Bet / All-in)
@@ -918,6 +948,7 @@ function subscribePublicChannel(tableId){
       onlineHandState = { ...msg.payload, hole_cards: msg.payload.revealed_hole_cards || {} };
       onlineBubbleFromState(msg.payload);
       render();
+      scheduleAutoNextHand();
     })
     .subscribe();
 }
@@ -1009,7 +1040,7 @@ function backToOnlineLobby(){
 // normale Cash-Session nach currentClub.sessions, genau wie eine Live-Session
 // (siehe submitNewSession/confirmAddParticipantCash/netFor) — Bilanz & Co.
 // berechnen sich automatisch aus chipCount − sum(buyIns), keine Sonderlogik
-// nötig. Einzelne Hände werden NICHT übernommen (nur das Gesamtresultat),
+// nötig. Einzelne Hände werden seit Kurzem MIT übernommen (siehe onlineHistoryRowToHand),
 // weil das Hands-Schema eng an die Live-Tisch-UI gekoppelt ist.
 function closeOnlineTable(){
   const tbl = onlineTables.find(x => x.id === currentOnlineTableId);
@@ -1019,6 +1050,53 @@ function closeOnlineTable(){
   if(seated.some(s => !s.player_id)){ showToast('Mindestens ein Platz ist keinem verknüpften Spieler zugeordnet — Ergebnis kann nicht übernommen werden.'); return; }
   const summary = seated.map(s => `${onlineSeatPlayerName(s)}: ${formatMoney(s.stack)} (Buy-in ${formatMoney(s.buyin_total)})`).join('\n');
   showConfirmModal(`Tisch schliessen und folgendes Ergebnis in die Statistik übernehmen?\n\n${summary}\n\nDas kann danach nicht mehr rückgängig gemacht werden.`, 'reallyCloseOnlineTable()', 'Schliessen & übernehmen');
+}
+// Eine Zeile aus online_hand_history in das Hand-Format der Handerfassung umwandeln (damit Hände-Tab und Replay funktionieren)
+function onlineHistoryRowToHand(row, handNumber, sessionId, pidOfSeat){
+  const sm = row.summary || {};
+  const pid = (seatNo) => pidOfSeat[String(seatNo)] || null;
+  const seatOrder = Array.isArray(sm.seat_order) ? sm.seat_order : Object.keys(sm.payouts || {}).map(Number);
+  const seats = seatOrder.map(pid).filter(Boolean);
+  if(!seats.length) return null;
+  const n = seatOrder.length;
+  const di = seatOrder.indexOf(sm.dealer_seat);
+  let sbSeat = null, bbSeat = null;
+  if(di >= 0 && n >= 2){
+    if(n === 2){ sbSeat = seatOrder[di]; bbSeat = seatOrder[(di + 1) % n]; }
+    else { sbSeat = seatOrder[(di + 1) % n]; bbSeat = seatOrder[(di + 2) % n]; }
+  }
+  // Aktionen je Strasse, Bezeichnung wie in der Handerfassung (bet / 3-bet / ...)
+  const actions = { preflop:[], flop:[], turn:[], river:[] };
+  const raiseCount = { preflop:0, flop:0, turn:0, river:0 };
+  (sm.actions || []).forEach(a => {
+    const st = actions[a.street] ? a.street : 'preflop';
+    const playerId = pid(a.seat);
+    if(!playerId) return;
+    if(a.action === 'fold') actions[st].push({ playerId, action:'fold' });
+    else if(a.action === 'check') actions[st].push({ playerId, action:'check', amount:null });
+    else if(a.action === 'call') actions[st].push({ playerId, action:'call', amount: a.amount != null ? Number(a.amount) : null });
+    else if(a.action === 'bet' || a.action === 'raise'){
+      const label = raiseCount[st] === 0 ? 'bet' : (raiseCount[st] + 2) + '-bet';
+      raiseCount[st]++;
+      actions[st].push({ playerId, action: label, amount: Number(a.amount) });
+    }
+  });
+  const holeCards = {};
+  Object.keys(sm.revealed_hole_cards || {}).forEach(sn => { const p = pid(sn); if(p) holeCards[p] = sm.revealed_hole_cards[sn]; });
+  const winnings = {};
+  Object.keys(sm.payouts || {}).forEach(sn => { const p = pid(sn); const amt = Number(sm.payouts[sn]); if(p && amt > 0.0001) winnings[p] = amt; });
+  const contributions = {}, startStacks = {};
+  Object.keys(sm.contributions || {}).forEach(sn => { const p = pid(sn); if(p) contributions[p] = Number(sm.contributions[sn]); });
+  Object.keys(sm.start_stacks || {}).forEach(sn => { const p = pid(sn); if(p) startStacks[p] = Number(sm.start_stacks[sn]); });
+  return {
+    id: uid(), sessionId, handNumber,
+    dealerPlayerId: pid(sm.dealer_seat), sbPlayerId: pid(sbSeat), bbPlayerId: pid(bbSeat), seats,
+    actions, board: (sm.board || []).slice(), holeCards,
+    winners: Object.keys(winnings), potSize: sm.pot_total != null ? Number(sm.pot_total) : null, story: '', tags: [],
+    winnings, sevenDeuce: null, contributions, startStacks,
+    skipped:false, uncontested: sm.phase_ended !== 'showdown', allInRunout: false,
+    createdAt: row.created_at || new Date().toISOString()
+  };
 }
 async function reallyCloseOnlineTable(){
   const tbl = onlineTables.find(x => x.id === currentOnlineTableId);
@@ -1043,11 +1121,29 @@ async function reallyCloseOnlineTable(){
     equilibriumConfirmed:true, cashConfirmed:true, ranksConfirmed:false, payoutsConfirmed:false,
     createdAt: nowIso
   };
+  // Gespielte Hände samt Aktionsverlauf aus dem Serverprotokoll in die gespeicherten Hände übernehmen
+  let handsSaved = 0;
+  try{
+    const { data: hist, error: histErr } = await sb.from('online_hand_history').select('*').eq('table_id', currentOnlineTableId).order('hand_no', { ascending: true });
+    if(histErr) throw histErr;
+    ensureClubDefaults();
+    if(!currentClub.hands) currentClub.hands = [];
+    const pidOfSeat = {};
+    seated.forEach(x => { pidOfSeat[String(x.seat_no)] = x.player_id; });
+    (hist || []).forEach((row, idx) => {
+      const h = onlineHistoryRowToHand(row, idx + 1, session.id, pidOfSeat);
+      if(h){ currentClub.hands.push(h); handsSaved++; }
+    });
+    session.handCounter = handsSaved;
+  }catch(e){
+    console.error('Hände übernehmen fehlgeschlagen', e);
+    showToast('Hände konnten nicht übernommen werden: ' + (e.message || e));
+  }
   currentClub.sessions.push(session);
   await saveClubData();
   const { error } = await sb.from('online_tables').update({ status:'finished' }).eq('id', currentOnlineTableId);
   if(error) showToast('Session übernommen, aber Tisch-Status konnte nicht aktualisiert werden: ' + error.message);
-  else showToast('Session übernommen — siehe Sessions-Tab.');
+  else showToast(handsSaved ? `Session übernommen (${handsSaved} Hände gespeichert) — siehe Sessions- und Hände-Tab.` : 'Session übernommen — siehe Sessions-Tab.');
   resetOnlineTableState();
   onlineLobbyLoaded = false;
   setView('sessions');
@@ -1075,11 +1171,11 @@ async function edgeErrorText(data, error){
   }catch(e){}
   return error ? error.message : 'Unbekannter Fehler';
 }
-async function callStartHand(){
+async function callStartHand(expectedHandNo){
   if(onlineBusy) return;
   onlineBusy = true;
   try{
-    const { data, error } = await sb.functions.invoke('start_hand', { body: { table_id: currentOnlineTableId } });
+    const { data, error } = await sb.functions.invoke('start_hand', { body: { table_id: currentOnlineTableId, expected_hand_no: (typeof expectedHandNo === 'number') ? expectedHandNo : null } });
     if(error || (data && data.error)){ showToast('Fehler: ' + await edgeErrorText(data, error)); return; }
     await refreshOnlineTableAndSeat();
   } finally { onlineBusy = false; }
@@ -1358,8 +1454,9 @@ function renderOnlineTableViewInner(){
       </div>
       <div class="panel action-pane light" style="margin-bottom:0;position:relative;padding-top:14px;">
         ${hs && hs.hand_no ? `<span class="street-pill">Hand #${hs.hand_no} · ${({preflop:'Preflop',flop:'Flop',turn:'Turn',river:'River',showdown:'Showdown',done:'Beendet'})[phase] || phase}</span>` : ''}
+        ${canStart && hs && hs.hand_no && phase === 'done' ? `<div style="text-align:center;color:var(--ink-soft);font-size:13px;padding:6px 0;">Nächste Hand startet automatisch …</div>` : ''}
         ${canStart || canClose ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0;">
-          ${canStart ? `<button class="btn btn-primary" onclick="callStartHand()">${hs && hs.hand_no ? 'Nächste Hand starten' : 'Hand starten'}</button>` : ''}
+          ${canStart && !(hs && hs.hand_no && phase === 'done') ? `<button class="btn btn-primary" onclick="callStartHand()">Hand starten</button>` : ''}
           ${canClose ? `<button class="btn btn-secondary" onclick="closeOnlineTable()">Tisch schliessen &amp; Ergebnis übernehmen</button>` : ''}
         </div>` : ''}
         ${(!hs || !hs.hand_no) && seatedRows.length >= 2 && !seatedRows.every(s => s.player_id) ? `<p class="lede" style="font-size:12px;">Hinweis: Ohne verknüpften Spieler (siehe Players-Tab) kann dieser Tisch später nicht in die Statistik übernommen werden.</p>` : ''}
