@@ -12561,7 +12561,7 @@ function handleCardSheetUpload(input){
         rect: { left:0, top:0, right:100, bottom:100 },
         rows: 4,
         cols: 13,
-        gapX: 0, gapY: 0, marginX: 0, marginY: 0, zoom: 1,
+        cardManual: false, cardW: null, cardH: null, gapX: 0, gapY: 0, marginX: 0, marginY: 0, zoom: 1,
         dragging: null,
         step: 1,
         cellImages: null,
@@ -12590,7 +12590,15 @@ function sheetBlockPx(s){
   const x0 = s.rect.left/100*s.naturalW + s.marginX, y0 = s.rect.top/100*s.naturalH + s.marginY;
   const x1 = s.rect.right/100*s.naturalW - s.marginX, y1 = s.rect.bottom/100*s.naturalH - s.marginY;
   const bw = Math.max(1, x1 - x0), bh = Math.max(1, y1 - y0);
-  const cw = (bw - (s.cols-1)*s.gapX)/s.cols, ch = (bh - (s.rows-1)*s.gapY)/s.rows;
+  let cw, ch;
+  if(s.cardManual && s.cardW > 0 && s.cardH > 0){
+    // Kartengrösse fest vorgegeben → Abstände ergeben sich aus dem Platz im Block
+    cw = s.cardW; ch = s.cardH;
+    s.gapX = s.cols > 1 ? (bw - s.cols*cw)/(s.cols-1) : 0;
+    s.gapY = s.rows > 1 ? (bh - s.rows*ch)/(s.rows-1) : 0;
+  } else {
+    cw = (bw - (s.cols-1)*s.gapX)/s.cols; ch = (bh - (s.rows-1)*s.gapY)/s.rows;
+  }
   return { x0, y0, x1, y1, bw, bh, cw, ch };
 }
 function sheetCellSrcRect(s, rowI, colI){
@@ -12628,6 +12636,13 @@ function openSheetImportOverlay(){
           ${sliderRow('Abstand oben/unten ↕','sheet-gapY',s.gapY,maxGapY,' px','onSheetSlider')}
           ${sliderRow('Rahmen → 1. Linie seitlich ↔','sheet-marginX',s.marginX,maxMarginX,' px','onSheetSlider')}
           ${sliderRow('Rahmen → 1. Linie oben/unten ↕','sheet-marginY',s.marginY,maxMarginY,' px','onSheetSlider')}
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;">
+          <span class="lede" style="margin:0;font-weight:700;">Karte manuell:</span>
+          <label>Breite <input type="number" min="1" step="0.5" id="sheet-cardW" style="width:76px;" oninput="onSheetCardInput()"> px</label>
+          <label>Höhe <input type="number" min="1" step="0.5" id="sheet-cardH" style="width:76px;" oninput="onSheetCardInput()"> px</label>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="sheetCardRatio()">Höhe = Breite × 1.4</button>
+          <span class="lede" style="margin:0;font-size:12px;">Manuell → die Abstände werden daraus berechnet; Abstand-Regler → Kartengrösse wird berechnet.</span>
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;">
           <span class="lede" style="margin:0;font-weight:700;">Rahmen (%):</span>
@@ -12708,12 +12723,25 @@ function updateSheetGrid(){
   if(countEl) countEl.textContent = s.rows * s.cols;
   renderSheetOverlayVisuals();
 }
+function onSheetCardInput(){
+  const s = sheetImportState; if(!s) return;
+  const w = Number(document.getElementById('sheet-cardW').value), h = Number(document.getElementById('sheet-cardH').value);
+  if(w > 0 && h > 0){ s.cardW = w; s.cardH = h; s.cardManual = true; }
+  renderSheetOverlayVisuals();
+}
+function sheetCardRatio(){
+  const s = sheetImportState; if(!s) return;
+  const b = sheetBlockPx(s);
+  s.cardW = Math.round((s.cardManual && s.cardW > 0 ? s.cardW : b.cw)*2)/2;
+  s.cardH = Math.round(s.cardW*1.4*2)/2; s.cardManual = true;
+  renderSheetOverlayVisuals();
+}
 function onSheetSlider(id, fromNumber){
   const s = sheetImportState; if(!s) return;
   const sl = document.getElementById(id), nm = document.getElementById(id+'-n');
   const v = Math.max(0, Number((fromNumber ? nm : sl).value) || 0);
   if(fromNumber){ sl.value = v; } else { nm.value = v; }
-  if(id === 'sheet-gapX') s.gapX = v; else if(id === 'sheet-gapY') s.gapY = v; else if(id === 'sheet-marginX') s.marginX = v; else if(id === 'sheet-marginY') s.marginY = v;
+  if(id === 'sheet-gapX'){ s.gapX = v; s.cardManual = false; } else if(id === 'sheet-gapY'){ s.gapY = v; s.cardManual = false; } else if(id === 'sheet-marginX') s.marginX = v; else if(id === 'sheet-marginY') s.marginY = v;
   renderSheetOverlayVisuals();
 }
 function updateSheetRectFromInputs(){
@@ -12786,6 +12814,10 @@ function renderSheetOverlayVisuals(){
     outline.style.width = (R.right-R.left)+'%'; outline.style.height = (R.bottom-R.top)+'%';
   }
   const b = sheetBlockPx(s);
+  // Eingabefelder synchron halten (nicht das gerade bearbeitete Feld überschreiben)
+  const sync = (id, v) => { const el = document.getElementById(id); if(el && el !== active) el.value = (Math.round(v*100)/100); };
+  sync('sheet-cardW', b.cw); sync('sheet-cardH', b.ch);
+  ['sheet-gapX','sheet-gapY'].forEach(id => { const v = id === 'sheet-gapX' ? s.gapX : s.gapY; sync(id, v); sync(id+'-n', v); });
   const px = v => v/s.naturalW*100, py = v => v/s.naturalH*100;
   const linesEl = document.getElementById('sheet-grid-lines');
   if(linesEl){
