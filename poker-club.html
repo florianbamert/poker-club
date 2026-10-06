@@ -12561,7 +12561,7 @@ function handleCardSheetUpload(input){
         rect: { left:0, top:0, right:100, bottom:100 },
         rows: 4,
         cols: 13,
-        inset: 0, cardW:null, cardH:null, cardAuto:true, insL:0, insT:0, insR:0, insB:0, offX:0, offY:0, zoom:1,
+        gapX: 0, gapY: 0, margin: 0, zoom: 1,
         dragging: null,
         step: 1,
         cellImages: null,
@@ -12576,15 +12576,38 @@ function handleCardSheetUpload(input){
 }
 function sheetImportDisplaySize(){
   const s = sheetImportState;
-  const maxW = Math.min(760, (typeof window !== 'undefined' ? window.innerWidth - 80 : 760));
+  const maxW = Math.min(900, (typeof window !== 'undefined' ? window.innerWidth - 80 : 900));
   const dispW = Math.max(240, Math.min(maxW, s.naturalW));
   const dispH = Math.round(dispW * (s.naturalH / s.naturalW));
   return { dispW, dispH };
+}
+// ── Karten-Cutter (neu) ─────────────────────────────────────────────────────────────────────────
+// Modell: gelber Aussenrahmen (4 Eck-Griffe, in % des Bildes) → darin der Kartenblock (Rahmen minus
+// Innenrand). Der Kartenblock wird in cols × rows Karten geteilt, getrennt durch die Abstände gapX/gapY
+// (px). Kartengrösse = (Blockgrösse − Abstände) / Anzahl. Pro Karte zwei gelbe Linien (linke/rechte bzw.
+// obere/untere Kante) → vor der ersten Karte eine, zwischen Karten zwei, nach der letzten eine.
+function sheetBlockPx(s){
+  const x0 = s.rect.left/100*s.naturalW + s.margin, y0 = s.rect.top/100*s.naturalH + s.margin;
+  const x1 = s.rect.right/100*s.naturalW - s.margin, y1 = s.rect.bottom/100*s.naturalH - s.margin;
+  const bw = Math.max(1, x1 - x0), bh = Math.max(1, y1 - y0);
+  const cw = (bw - (s.cols-1)*s.gapX)/s.cols, ch = (bh - (s.rows-1)*s.gapY)/s.rows;
+  return { x0, y0, x1, y1, bw, bh, cw, ch };
+}
+function sheetCellSrcRect(s, rowI, colI){
+  const b = sheetBlockPx(s);
+  const sw = Math.max(1, Math.min(s.naturalW, b.cw)), sh = Math.max(1, Math.min(s.naturalH, b.ch));
+  let sx = b.x0 + colI*(b.cw + s.gapX), sy = b.y0 + rowI*(b.ch + s.gapY);
+  sx = Math.max(0, Math.min(s.naturalW - sw, sx));
+  sy = Math.max(0, Math.min(s.naturalH - sh, sy));
+  return { sx, sy, sw, sh };
 }
 function openSheetImportOverlay(){
   const s = sheetImportState;
   if(!s) return;
   const { dispW, dispH } = sheetImportDisplaySize();
+  const maxGapX = Math.max(5, Math.round(s.naturalW/s.cols/2)), maxGapY = Math.max(5, Math.round(s.naturalH/s.rows/2));
+  const maxMargin = Math.round(Math.min(s.naturalW, s.naturalH)/10);
+  const sliderRow = (label, id, val, max, unit, handler) => `<label style="display:flex;align-items:center;gap:6px;">${label} <input type="range" min="0" max="${max}" step="0.25" id="${id}" value="${val}" style="width:150px;" oninput="${handler}('${id}',false)"> <input type="number" min="0" max="${max}" step="0.25" id="${id}-n" value="${val}" style="width:70px;" oninput="${handler}('${id}',true)">${unit}</label>`;
   const overlay = document.createElement('div');
   overlay.id = 'sheet-import-overlay';
   overlay.className = 'modal-backdrop';
@@ -12592,70 +12615,48 @@ function openSheetImportOverlay(){
   overlay.innerHTML = `
     <div class="modal" style="max-width:${dispW+64}px;text-align:left;">
       <h2>Kartendeck-Bild ausrichten</h2>
-      <p class="lede" style="margin-top:-6px;">Meistens reicht es, nur Zeilen/Spalten einzugeben — das Raster startet bereits an den Bildkanten. Nur wenn das Bild selbst noch einen Rand/Hintergrund um die Karten hat, die gelben Griffe auf die äusseren Kartenränder ziehen. Unten in der Vorschau sofort prüfen, ob die 5 Beispielkarten sauber getroffen werden.</p>
-      <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:center;margin-bottom:12px;">
+      <p class="lede" style="margin-top:-6px;">Gelben Rahmen an den vier Ecken auf das Kartenblatt ziehen, Zeilen/Spalten eingeben und die Abstände zwischen den Karten einstellen. Jede Karte wird von zwei gelben Linien eingefasst — die Linien sollen genau auf den Kartenkanten liegen.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:center;margin-bottom:10px;">
         <label style="display:flex;align-items:center;gap:6px;">Zeilen <input type="number" min="1" max="20" id="sheet-rows" value="${s.rows}" style="width:60px;" oninput="updateSheetGrid()"></label>
         <label style="display:flex;align-items:center;gap:6px;">Spalten <input type="number" min="1" max="20" id="sheet-cols" value="${s.cols}" style="width:60px;" oninput="updateSheetGrid()"></label>
-        <span class="lede" style="margin:0;">= <span id="sheet-cell-count">${s.rows*s.cols}</span> Zellen</span>
-        <button type="button" class="btn btn-secondary btn-sm" onclick="snapSheetRectToImageEdges()">📐 An Bildrand ausrichten</button>
+        <span class="lede" style="margin:0;">= <span id="sheet-cell-count">${s.rows*s.cols}</span> Karten</span>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="snapSheetRectToImageEdges()">📐 Rahmen = ganzes Bild</button>
       </div>
-      <div style="margin-bottom:12px;padding:8px 10px;background:var(--paper);border:1px solid var(--paper-line);border-radius:8px;">
-        <div class="lede" style="margin:0 0 6px;font-weight:700;">1. <span style="color:#ffcc33;">Gelbes Raster</span> auf die äusseren Kartenränder legen (erste Karte oben links bis letzte Karte unten rechts). 2. Kartengrösse eintragen — die Zwischenräume werden automatisch berechnet.</div>
-        <div style="display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;margin-bottom:10px;">
-          <label style="display:flex;align-items:center;gap:6px;">Karte Breite <input type="number" min="1" step="0.5" id="sheet-cardW" style="width:80px;" oninput="updateSheetCardSize()"> px</label>
-          <label style="display:flex;align-items:center;gap:6px;">Höhe <input type="number" min="1" step="0.5" id="sheet-cardH" style="width:80px;" oninput="updateSheetCardSize()"> px</label>
-          <button type="button" class="btn btn-secondary btn-sm" onclick="sheetCardSizeRatio()">Höhe aus Breite (5:7)</button>
-          <button type="button" class="btn btn-secondary btn-sm" onclick="sheetCardSizeFromGrid()">= Rasterzelle</button>
-          <span id="sheet-gap-info" class="lede" style="margin:0;"></span>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px;padding:8px 10px;background:var(--paper);border:1px solid var(--paper-line);border-radius:8px;">
+        <div style="display:flex;flex-wrap:wrap;gap:8px 20px;">
+          ${sliderRow('Abstand seitlich ↔','sheet-gapX',s.gapX,maxGapX,' px','onSheetSlider')}
+          ${sliderRow('Abstand oben/unten ↕','sheet-gapY',s.gapY,maxGapY,' px','onSheetSlider')}
+          ${sliderRow('Innenrand','sheet-margin',s.margin,maxMargin,' px','onSheetSlider')}
         </div>
-        <div class="lede" style="margin:0 0 6px;font-weight:700;"><span style="color:#ff5050;">Rote Linie</span> = tatsächlicher Zuschnitt jeder Karte (% der Zelle)</div>
-        <div style="display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;">
-          ${[['L','Links'],['T','Oben'],['R','Rechts'],['B','Unten']].map(([k,l])=>`<label style="display:flex;align-items:center;gap:6px;">${l} <input type="range" min="0" max="45" step="0.25" id="sheet-ins${k}" value="${s['ins'+k]||0}" style="width:110px;" oninput="updateSheetInset()"> <input type="number" min="0" max="45" step="0.25" id="sheet-ins${k}-n" value="${s['ins'+k]||0}" style="width:60px;" oninput="updateSheetInset('${k}')">%</label>`).join('')}
+        <div style="display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;">
+          <span class="lede" style="margin:0;font-weight:700;">Rahmen (%):</span>
+          <label>Links <input type="number" min="0" max="100" step="0.1" id="sheet-rect-left" style="width:68px;" oninput="updateSheetRectFromInputs()"></label>
+          <label>Oben <input type="number" min="0" max="100" step="0.1" id="sheet-rect-top" style="width:68px;" oninput="updateSheetRectFromInputs()"></label>
+          <label>Rechts <input type="number" min="0" max="100" step="0.1" id="sheet-rect-right" style="width:68px;" oninput="updateSheetRectFromInputs()"></label>
+          <label>Unten <input type="number" min="0" max="100" step="0.1" id="sheet-rect-bottom" style="width:68px;" oninput="updateSheetRectFromInputs()"></label>
         </div>
-        <div style="display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;margin-top:6px;">
-          <label style="display:flex;align-items:center;gap:6px;">Ausschnitt verschieben ↔ <input type="range" min="-30" max="30" step="0.25" id="sheet-offX" value="${s.offX||0}" style="width:130px;" oninput="updateSheetInset()"> <span id="sheet-offX-v">${s.offX||0}</span>%</label>
-          <label style="display:flex;align-items:center;gap:6px;">↕ <input type="range" min="-30" max="30" step="0.25" id="sheet-offY" value="${s.offY||0}" style="width:130px;" oninput="updateSheetInset()"> <span id="sheet-offY-v">${s.offY||0}</span>%</label>
-          <button type="button" class="btn btn-secondary btn-sm" onclick="resetSheetInset()">Zurücksetzen</button>
-        </div>
-        <div class="lede" style="margin:6px 0 0;font-size:12px;">Optional: Seiten einzeln abschneiden, um nur einen Teil der Karte zu nehmen (relativ zur Kartengrösse oben). «Verschieben» rückt den Ausschnitt ohne seine Grösse zu ändern — er bleibt immer im Bild, es entsteht kein schwarzer Rand. Die <span style="color:#ffcc33;font-weight:700;">gelbe</span> Linie zeigt nur die Rasteraufteilung.</div>
+        <div id="sheet-card-info" class="lede" style="margin:0;"></div>
       </div>
-      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:8px;">
-        <span class="lede" style="margin:0;font-weight:700;">🔍 Zoom:</span>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
+        <span class="lede" style="margin:0;font-weight:700;">🔍 Zoom</span>
         <button type="button" class="btn btn-secondary btn-sm" onclick="setSheetZoom(-0.5)">−</button>
-        <input type="range" min="1" max="8" step="0.25" id="sheet-zoom" value="${s.zoom||1}" style="width:160px;" oninput="setSheetZoom(null,this.value)">
+        <input type="range" min="1" max="8" step="0.25" id="sheet-zoom" value="${s.zoom||1}" style="width:140px;" oninput="setSheetZoom(null,this.value)">
         <button type="button" class="btn btn-secondary btn-sm" onclick="setSheetZoom(0.5)">+</button>
         <span id="sheet-zoom-v" class="lede" style="margin:0;">${s.zoom||1}×</span>
-        <button type="button" class="btn btn-secondary btn-sm" onclick="sheetZoomToHandle('tl')">🔍 Griff oben links</button>
-        <button type="button" class="btn btn-secondary btn-sm" onclick="sheetZoomToHandle('br')">🔍 Griff unten rechts</button>
-        <button type="button" class="btn btn-secondary btn-sm" onclick="setSheetZoom(null,1)">Ganzes Bild</button>
-        <span class="lede" style="margin:0;font-size:12px;">Mausrad = zoomen an der Mausposition, leere Fläche ziehen = Bild verschieben.</span>
+        <span class="lede" style="margin:0;font-size:12px;">Mausrad = zoomen · leere Fläche ziehen = verschieben</span>
       </div>
-      <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:12px;padding:8px 10px;background:var(--paper);border:1px solid var(--paper-line);border-radius:8px;">
-        <span class="lede" style="margin:0;font-weight:700;">Gelbes Raster exakt (%):</span>
-        <label style="display:flex;align-items:center;gap:4px;">Links <input type="number" min="0" max="100" step="0.1" id="sheet-rect-left" value="${s.rect.left.toFixed(1)}" style="width:72px;" oninput="updateSheetRectFromInputs()"></label>
-        <label style="display:flex;align-items:center;gap:4px;">Oben <input type="number" min="0" max="100" step="0.1" id="sheet-rect-top" value="${s.rect.top.toFixed(1)}" style="width:72px;" oninput="updateSheetRectFromInputs()"></label>
-        <label style="display:flex;align-items:center;gap:4px;">Rechts <input type="number" min="0" max="100" step="0.1" id="sheet-rect-right" value="${s.rect.right.toFixed(1)}" style="width:72px;" oninput="updateSheetRectFromInputs()"></label>
-        <label style="display:flex;align-items:center;gap:4px;">Unten <input type="number" min="0" max="100" step="0.1" id="sheet-rect-bottom" value="${s.rect.bottom.toFixed(1)}" style="width:72px;" oninput="updateSheetRectFromInputs()"></label>
-        <span class="lede" style="margin:0;">Statt an den gelben Griffen zu ziehen: Werte direkt eintippen oder mit den kleinen Pfeilen am Feld in 0.1%-Schritten nachjustieren (gedrückt halten für schnelleres Wiederholen).</span>
-      </div>
-      <div id="sheet-import-scroll" style="width:${dispW}px;max-width:100%;max-height:72vh;overflow:auto;cursor:move;margin:0 auto;border-radius:6px;background:#111;">
-      <div id="sheet-import-container" style="position:relative;width:${dispW*(s.zoom||1)}px;height:${dispH*(s.zoom||1)}px;background:#111;touch-action:none;user-select:none;">
-        <img src="${s.dataUrl}" style="position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;" draggable="false">
-        <div id="sheet-rect-outline" style="position:absolute;border:2px solid #ffcc33;pointer-events:none;box-sizing:border-box;"></div>
-        <div id="sheet-grid-lines"></div>
-        <div id="sheet-handle-tl" class="sheet-handle" style="position:absolute;width:18px;height:18px;margin-left:-9px;margin-top:-9px;border-radius:50%;background:#ffcc33;border:2px solid #1a1a1a;cursor:grab;"></div>
-        <div id="sheet-handle-cs" class="sheet-handle" title="Kartengrösse: Ecke unten rechts der ersten Karte ziehen" style="position:absolute;width:18px;height:18px;margin-left:-9px;margin-top:-9px;border-radius:50%;background:#ff5050;border:2px solid #1a1a1a;cursor:grab;z-index:3;"></div>
-        <div id="sheet-handle-br" class="sheet-handle" style="position:absolute;width:18px;height:18px;margin-left:-9px;margin-top:-9px;border-radius:50%;background:#ffcc33;border:2px solid #1a1a1a;cursor:grab;"></div>
-      </div>
+      <div id="sheet-import-scroll" style="width:${dispW}px;max-width:100%;max-height:72vh;overflow:auto;margin:0 auto;border-radius:6px;background:#111;cursor:move;">
+        <div id="sheet-import-container" style="position:relative;width:${dispW*(s.zoom||1)}px;height:${dispH*(s.zoom||1)}px;background:#111;touch-action:none;user-select:none;">
+          <img src="${s.dataUrl}" style="position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;" draggable="false">
+          <div id="sheet-grid-lines"></div>
+          <div id="sheet-rect-outline" style="position:absolute;border:2px solid #ffcc33;pointer-events:none;box-sizing:border-box;"></div>
+          ${['tl','tr','bl','br'].map(k => `<div id="sheet-handle-${k}" class="sheet-handle" style="position:absolute;width:18px;height:18px;margin-left:-9px;margin-top:-9px;border-radius:50%;background:#ffcc33;border:2px solid #1a1a1a;cursor:grab;z-index:3;"></div>`).join('')}
+        </div>
       </div>
       <div style="margin-top:14px;">
-        <p class="lede" style="margin:0 0 6px;font-size:12px;">Live-Vorschau — so würden die vier Eck-Karten und die Mitte zugeschnitten:</p>
+        <p class="lede" style="margin:0 0 6px;font-size:12px;">Live-Vorschau — so werden die vier Eck-Karten und die Mitte zugeschnitten:</p>
         <div style="display:flex;gap:10px;flex-wrap:wrap;">
-          <div style="text-align:center;"><div id="sheet-preview-tl" class="sheet-preview-thumb" style="width:100px;aspect-ratio:5/7;border-radius:6px;background:#333;background-size:cover;background-position:center;border:1px solid var(--paper-line);"></div><div class="lede" style="margin:2px 0 0;font-size:10px;">oben links</div></div>
-          <div style="text-align:center;"><div id="sheet-preview-tr" class="sheet-preview-thumb" style="width:100px;aspect-ratio:5/7;border-radius:6px;background:#333;background-size:cover;background-position:center;border:1px solid var(--paper-line);"></div><div class="lede" style="margin:2px 0 0;font-size:10px;">oben rechts</div></div>
-          <div style="text-align:center;"><div id="sheet-preview-center" class="sheet-preview-thumb" style="width:100px;aspect-ratio:5/7;border-radius:6px;background:#333;background-size:cover;background-position:center;border:1px solid var(--paper-line);"></div><div class="lede" style="margin:2px 0 0;font-size:10px;">Mitte</div></div>
-          <div style="text-align:center;"><div id="sheet-preview-bl" class="sheet-preview-thumb" style="width:100px;aspect-ratio:5/7;border-radius:6px;background:#333;background-size:cover;background-position:center;border:1px solid var(--paper-line);"></div><div class="lede" style="margin:2px 0 0;font-size:10px;">unten links</div></div>
-          <div style="text-align:center;"><div id="sheet-preview-br" class="sheet-preview-thumb" style="width:100px;aspect-ratio:5/7;border-radius:6px;background:#333;background-size:cover;background-position:center;border:1px solid var(--paper-line);"></div><div class="lede" style="margin:2px 0 0;font-size:10px;">unten rechts</div></div>
+          ${[['tl','oben links'],['tr','oben rechts'],['center','Mitte'],['bl','unten links'],['br','unten rechts']].map(([k,l]) => `<div style="text-align:center;"><div id="sheet-preview-${k}" class="sheet-preview-thumb" style="width:100px;aspect-ratio:5/7;border-radius:6px;background:#333;background-size:cover;background-position:center;border:1px solid var(--paper-line);"></div><div class="lede" style="margin:2px 0 0;font-size:10px;">${l}</div></div>`).join('')}
         </div>
       </div>
       <div class="modal-actions">
@@ -12664,18 +12665,12 @@ function openSheetImportOverlay(){
       </div>
     </div>`;
   document.body.appendChild(overlay);
-  const tlHandle = document.getElementById('sheet-handle-tl');
-  const brHandle = document.getElementById('sheet-handle-br');
-  const csHandle = document.getElementById('sheet-handle-cs');
-  const onCsDown = e => { e.preventDefault(); if(sheetImportState) sheetImportState.dragging = 'cs'; };
-  csHandle.addEventListener('mousedown', onCsDown);
-  csHandle.addEventListener('touchstart', onCsDown, {passive:false});
-  const onTlDown = e => { e.preventDefault(); if(sheetImportState) sheetImportState.dragging = 'tl'; };
-  const onBrDown = e => { e.preventDefault(); if(sheetImportState) sheetImportState.dragging = 'br'; };
-  tlHandle.addEventListener('mousedown', onTlDown);
-  tlHandle.addEventListener('touchstart', onTlDown, {passive:false});
-  brHandle.addEventListener('mousedown', onBrDown);
-  brHandle.addEventListener('touchstart', onBrDown, {passive:false});
+  ['tl','tr','bl','br'].forEach(k => {
+    const h = document.getElementById('sheet-handle-'+k);
+    const down = e => { e.preventDefault(); if(sheetImportState) sheetImportState.dragging = k; };
+    h.addEventListener('mousedown', down);
+    h.addEventListener('touchstart', down, {passive:false});
+  });
   window.addEventListener('mousemove', onSheetWindowMouseMove);
   window.addEventListener('mouseup', onSheetWindowMouseUp);
   window.addEventListener('touchmove', onSheetWindowTouchMove, {passive:false});
@@ -12685,7 +12680,7 @@ function openSheetImportOverlay(){
 }
 function onSheetWindowMouseMove(e){ sheetContainerPointerMove(e.clientX, e.clientY); }
 function onSheetWindowMouseUp(){ sheetContainerPointerUp(); }
-function onSheetWindowTouchMove(e){ const touch = e.touches[0]; if(touch){ e.preventDefault(); sheetContainerPointerMove(touch.clientX, touch.clientY); } }
+function onSheetWindowTouchMove(e){ const touch = e.touches[0]; if(touch && sheetImportState && sheetImportState.dragging){ e.preventDefault(); sheetContainerPointerMove(touch.clientX, touch.clientY); } }
 function onSheetWindowTouchEnd(){ sheetContainerPointerUp(); }
 function sheetContainerPointerMove(x, y){
   const s = sheetImportState;
@@ -12693,123 +12688,47 @@ function sheetContainerPointerMove(x, y){
   const container = document.getElementById('sheet-import-container');
   if(!container) return;
   const r = container.getBoundingClientRect();
-  let px = (x - r.left) / r.width * 100;
-  let py = (y - r.top) / r.height * 100;
-  px = Math.max(0, Math.min(100, px));
-  py = Math.max(0, Math.min(100, py));
-  const MIN = 5;
-  if(s.dragging === 'tl'){
-    s.rect.left = Math.min(px, s.rect.right - MIN);
-    s.rect.top = Math.min(py, s.rect.bottom - MIN);
-  } else if(s.dragging === 'cs'){
-    const rw = (s.rect.right - s.rect.left)/100*s.naturalW, rh = (s.rect.bottom - s.rect.top)/100*s.naturalH;
-    s.cardAuto = false;
-    s.cardW = Math.max(1, Math.min(rw/s.cols*1.0 + 0, Math.max(1,(px - s.rect.left)/100*s.naturalW)));
-    s.cardH = Math.max(1, Math.min(rh/s.rows*1.0 + 0, Math.max(1,(py - s.rect.top)/100*s.naturalH)));
-    s.cardW = Math.round(s.cardW*2)/2; s.cardH = Math.round(s.cardH*2)/2;
-    sheetSyncCardInputs(true);
-  } else if(s.dragging === 'br'){
-    s.rect.right = Math.max(px, s.rect.left + MIN);
-    s.rect.bottom = Math.max(py, s.rect.top + MIN);
-  }
+  const px = Math.max(0, Math.min(100, (x - r.left) / r.width * 100));
+  const py = Math.max(0, Math.min(100, (y - r.top) / r.height * 100));
+  const MIN = 5, d = s.dragging;
+  if(d === 'tl' || d === 'bl') s.rect.left = Math.min(px, s.rect.right - MIN);
+  if(d === 'tr' || d === 'br') s.rect.right = Math.max(px, s.rect.left + MIN);
+  if(d === 'tl' || d === 'tr') s.rect.top = Math.min(py, s.rect.bottom - MIN);
+  if(d === 'bl' || d === 'br') s.rect.bottom = Math.max(py, s.rect.top + MIN);
   renderSheetOverlayVisuals();
 }
 function sheetContainerPointerUp(){ if(sheetImportState) sheetImportState.dragging = null; }
 function updateSheetGrid(){
   const s = sheetImportState;
   if(!s) return;
-  const rowsInput = document.getElementById('sheet-rows');
-  const colsInput = document.getElementById('sheet-cols');
-  s.rows = Math.max(1, Math.min(20, Number(rowsInput.value) || 1));
-  s.cols = Math.max(1, Math.min(20, Number(colsInput.value) || 1));
+  s.rows = Math.max(1, Math.min(20, Number(document.getElementById('sheet-rows').value) || 1));
+  s.cols = Math.max(1, Math.min(20, Number(document.getElementById('sheet-cols').value) || 1));
   const countEl = document.getElementById('sheet-cell-count');
   if(countEl) countEl.textContent = s.rows * s.cols;
   renderSheetOverlayVisuals();
 }
+function onSheetSlider(id, fromNumber){
+  const s = sheetImportState; if(!s) return;
+  const sl = document.getElementById(id), nm = document.getElementById(id+'-n');
+  const v = Math.max(0, Number((fromNumber ? nm : sl).value) || 0);
+  if(fromNumber){ sl.value = v; } else { nm.value = v; }
+  if(id === 'sheet-gapX') s.gapX = v; else if(id === 'sheet-gapY') s.gapY = v; else if(id === 'sheet-margin') s.margin = v;
+  renderSheetOverlayVisuals();
+}
 function updateSheetRectFromInputs(){
-  // Digitale Alternative zum Ziehen an den gelben Griffen — exakt auf 0.1% genau statt "per Hand auf
-  // dem Bildschirm treffen". Dieselben MIN-Mindestabstände wie beim Ziehen (sheetContainerPointerMove),
-  // damit links/rechts bzw. oben/unten sich nicht überkreuzen können.
-  const s = sheetImportState;
-  if(!s) return;
+  const s = sheetImportState; if(!s) return;
   const MIN = 5;
-  const leftEl = document.getElementById('sheet-rect-left');
-  const topEl = document.getElementById('sheet-rect-top');
-  const rightEl = document.getElementById('sheet-rect-right');
-  const bottomEl = document.getElementById('sheet-rect-bottom');
-  if(!leftEl || !topEl || !rightEl || !bottomEl) return;
-  let left = Number(leftEl.value), top = Number(topEl.value), right = Number(rightEl.value), bottom = Number(bottomEl.value);
-  if(!Number.isFinite(left)) left = s.rect.left;
-  if(!Number.isFinite(top)) top = s.rect.top;
-  if(!Number.isFinite(right)) right = s.rect.right;
-  if(!Number.isFinite(bottom)) bottom = s.rect.bottom;
-  left = Math.max(0, Math.min(100, left));
-  top = Math.max(0, Math.min(100, top));
-  right = Math.max(0, Math.min(100, right));
-  bottom = Math.max(0, Math.min(100, bottom));
+  const g = (id, fb) => { const v = Number(document.getElementById(id).value); return Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : fb; };
+  let left = g('sheet-rect-left', s.rect.left), top = g('sheet-rect-top', s.rect.top), right = g('sheet-rect-right', s.rect.right), bottom = g('sheet-rect-bottom', s.rect.bottom);
   if(right - left < MIN) right = Math.min(100, left + MIN);
   if(bottom - top < MIN) bottom = Math.min(100, top + MIN);
   s.rect = { left, top, right, bottom };
   renderSheetOverlayVisuals();
 }
-function updateSheetInset(fromNum){
-  const s = sheetImportState;
-  if(!s) return;
-  const num = v => Math.max(0, Math.min(45, Number(v) || 0));
-  ['L','T','R','B'].forEach(k => {
-    const sl = document.getElementById('sheet-ins'+k), nm = document.getElementById('sheet-ins'+k+'-n');
-    const src = (fromNum === k) ? nm : sl;
-    s['ins'+k] = num(src.value);
-    if(sl && sl !== src) sl.value = s['ins'+k];
-    if(nm && nm !== src && nm !== document.activeElement) nm.value = s['ins'+k];
-  });
-  // Gegenüberliegende Seiten dürfen sich nie überkreuzen (mind. 10 % bleiben)
-  if(s.insL + s.insR > 90){ s.insR = 90 - s.insL; }
-  if(s.insT + s.insB > 90){ s.insB = 90 - s.insT; }
-  s.offX = Number(document.getElementById('sheet-offX').value) || 0;
-  s.offY = Number(document.getElementById('sheet-offY').value) || 0;
-  const ox = document.getElementById('sheet-offX-v'), oy = document.getElementById('sheet-offY-v');
-  if(ox) ox.textContent = s.offX; if(oy) oy.textContent = s.offY;
+function snapSheetRectToImageEdges(){
+  const s = sheetImportState; if(!s) return;
+  s.rect = { left:0, top:0, right:100, bottom:100 };
   renderSheetOverlayVisuals();
-}
-function sheetCardSizeFromGrid(){
-  const s = sheetImportState; if(!s) return;
-  s.cardW = Math.round((s.rect.right - s.rect.left)/100*s.naturalW/s.cols*2)/2;
-  s.cardH = Math.round((s.rect.bottom - s.rect.top)/100*s.naturalH/s.rows*2)/2;
-  s.cardAuto = true; sheetSyncCardInputs(true); renderSheetOverlayVisuals();
-}
-function sheetCardSizeRatio(){
-  const s = sheetImportState; if(!s) return;
-  if(!(s.cardW > 0)) sheetCardSizeFromGrid();
-  s.cardH = Math.round(s.cardW*1.4*2)/2; s.cardAuto = false;
-  sheetSyncCardInputs(true); renderSheetOverlayVisuals();
-}
-function updateSheetCardSize(){
-  const s = sheetImportState; if(!s) return;
-  const w = Number(document.getElementById('sheet-cardW').value), h = Number(document.getElementById('sheet-cardH').value);
-  s.cardW = w > 0 ? w : null; s.cardH = h > 0 ? h : null; s.cardAuto = !(s.cardW > 0 && s.cardH > 0);
-  renderSheetOverlayVisuals();
-}
-function sheetSyncCardInputs(force){
-  const s = sheetImportState; if(!s) return;
-  const a = document.getElementById('sheet-cardW'), b = document.getElementById('sheet-cardH');
-  if(a && (force || a !== document.activeElement)) a.value = s.cardW || '';
-  if(b && (force || b !== document.activeElement)) b.value = s.cardH || '';
-  const info = document.getElementById('sheet-gap-info');
-  if(info){
-    const rw = (s.rect.right - s.rect.left)/100*s.naturalW, rh = (s.rect.bottom - s.rect.top)/100*s.naturalH;
-    if(s.cardW > 0 && s.cardH > 0){
-      const gx = s.cols > 1 ? (rw - s.cols*s.cardW)/(s.cols-1) : 0, gy = s.rows > 1 ? (rh - s.rows*s.cardH)/(s.rows-1) : 0;
-      info.innerHTML = `Abstand automatisch: ↔ <b>${gx.toFixed(1)}</b> px, ↕ <b>${gy.toFixed(1)}</b> px` + ((gx<0||gy<0)?' <span style="color:#ff5050;">(negativ = Karten überlappen, Grösse zu gross)</span>':'');
-    } else info.textContent = 'Leer = Rasterzellen gleich gross (ohne Abstände)';
-  }
-}
-function resetSheetInset(){
-  const s = sheetImportState; if(!s) return;
-  s.insL = s.insT = s.insR = s.insB = 0; s.offX = s.offY = 0;
-  ['L','T','R','B'].forEach(k => { const a=document.getElementById('sheet-ins'+k), b=document.getElementById('sheet-ins'+k+'-n'); if(a)a.value=0; if(b)b.value=0; });
-  document.getElementById('sheet-offX').value = 0; document.getElementById('sheet-offY').value = 0;
-  updateSheetInset();
 }
 function setSheetZoom(delta, abs, focus){
   const s = sheetImportState; if(!s) return;
@@ -12818,7 +12737,6 @@ function setSheetZoom(delta, abs, focus){
   const scroll = document.getElementById('sheet-import-scroll');
   const cont = document.getElementById('sheet-import-container');
   if(!scroll || !cont) return;
-  // Fokuspunkt: Bildanteil (fx,fy) soll an Position (vx,vy) im Sichtfenster bleiben (Standard: Mitte)
   const f = focus || { fx:(scroll.scrollLeft + scroll.clientWidth/2) / cont.clientWidth, fy:(scroll.scrollTop + scroll.clientHeight/2) / cont.clientHeight, vx:scroll.clientWidth/2, vy:scroll.clientHeight/2 };
   const { dispW, dispH } = sheetImportDisplaySize();
   s.zoom = z;
@@ -12828,12 +12746,7 @@ function setSheetZoom(delta, abs, focus){
   const sl = document.getElementById('sheet-zoom'); if(sl) sl.value = z;
   const v = document.getElementById('sheet-zoom-v'); if(v) v.textContent = z+'×';
 }
-function sheetZoomToHandle(which){
-  const s = sheetImportState; if(!s) return;
-  const px = which === 'tl' ? s.rect.left : s.rect.right, py = which === 'tl' ? s.rect.top : s.rect.bottom;
-  const scroll = document.getElementById('sheet-import-scroll'); if(!scroll) return;
-  setSheetZoom(null, Math.max(s.zoom||1, 4), { fx:px/100, fy:py/100, vx:scroll.clientWidth/2, vy:scroll.clientHeight/2 });
-}
+let sheetPanState = null, sheetPanBound = false;
 function sheetBindZoomPan(){
   const scroll = document.getElementById('sheet-import-scroll'); if(!scroll) return;
   scroll.addEventListener('wheel', e => {
@@ -12842,137 +12755,61 @@ function sheetBindZoomPan(){
     const cont = document.getElementById('sheet-import-container');
     const r = scroll.getBoundingClientRect();
     const vx = e.clientX - r.left, vy = e.clientY - r.top;
-    const fx = (scroll.scrollLeft + vx) / cont.clientWidth, fy = (scroll.scrollTop + vy) / cont.clientHeight;
-    setSheetZoom(e.deltaY < 0 ? 0.5 : -0.5, null, { fx, fy, vx, vy });
+    setSheetZoom(e.deltaY < 0 ? 0.5 : -0.5, null, { fx:(scroll.scrollLeft + vx) / cont.clientWidth, fy:(scroll.scrollTop + vy) / cont.clientHeight, vx, vy });
   }, { passive:false });
-  let pan = null;
   scroll.addEventListener('mousedown', e => {
     if(e.target.closest('.sheet-handle')) return;
-    pan = { x:e.clientX, y:e.clientY, sl:scroll.scrollLeft, st:scroll.scrollTop };
+    sheetPanState = { x:e.clientX, y:e.clientY, sl:scroll.scrollLeft, st:scroll.scrollTop, el:scroll };
     e.preventDefault();
   });
-  window.addEventListener('mousemove', e => { if(pan){ scroll.scrollLeft = pan.sl - (e.clientX - pan.x); scroll.scrollTop = pan.st - (e.clientY - pan.y); } });
-  window.addEventListener('mouseup', () => { pan = null; });
-}
-function snapSheetRectToImageEdges(){
-  // Abkürzung für bereits saubere, randlose Raster (z.B. direkt von der KI exportierte Sprite-Sheets):
-  // Rechteck einfach auf die ganzen Bildkanten setzen, statt die Griffe von Hand zu ziehen.
-  const s = sheetImportState;
-  if(!s) return;
-  s.rect = { left:0, top:0, right:100, bottom:100 };
-  renderSheetOverlayVisuals();
-  showToast('Rahmen an Bildrand ausgerichtet — Raster unten prüfen und bei Bedarf feinjustieren.');
+  if(!sheetPanBound){
+    sheetPanBound = true;
+    window.addEventListener('mousemove', e => { const p = sheetPanState; if(p){ p.el.scrollLeft = p.sl - (e.clientX - p.x); p.el.scrollTop = p.st - (e.clientY - p.y); } });
+    window.addEventListener('mouseup', () => { sheetPanState = null; });
+  }
 }
 function renderSheetOverlayVisuals(){
   const s = sheetImportState;
   if(!s) return;
-  const tl = document.getElementById('sheet-handle-tl');
-  const br = document.getElementById('sheet-handle-br');
-  const outline = document.getElementById('sheet-rect-outline');
-  if(tl){ tl.style.left = s.rect.left+'%'; tl.style.top = s.rect.top+'%'; }
-  if(br){ br.style.left = s.rect.right+'%'; br.style.top = s.rect.bottom+'%'; }
-  if(s.cardAuto){ s.cardW = (s.rect.right - s.rect.left)/100*s.naturalW/s.cols; s.cardH = (s.rect.bottom - s.rect.top)/100*s.naturalH/s.rows; }
-  const cs = document.getElementById('sheet-handle-cs');
-  if(cs){ cs.style.left = (s.rect.left + s.cardW/s.naturalW*100)+'%'; cs.style.top = (s.rect.top + s.cardH/s.naturalH*100)+'%'; }
-  // Digitale Eingabefelder (links/oben/rechts/unten) mit dem aktuellen Rechteck synchron halten —
-  // auch wenn die Änderung gerade vom Ziehen der Griffe oder vom "An Bildrand ausrichten"-Button kam,
-  // nicht nur von den Feldern selbst. document.activeElement-Check verhindert, dass ein Feld, in das
-  // der Nutzer gerade tippt, während des Tippens überschrieben wird (sonst "springt" der Cursor/Wert).
+  const pos = (id, x, y) => { const el = document.getElementById(id); if(el){ el.style.left = x+'%'; el.style.top = y+'%'; } };
+  const R = s.rect;
+  pos('sheet-handle-tl', R.left, R.top); pos('sheet-handle-tr', R.right, R.top);
+  pos('sheet-handle-bl', R.left, R.bottom); pos('sheet-handle-br', R.right, R.bottom);
   const active = document.activeElement;
-  const syncField = (id, val) => {
-    const el = document.getElementById(id);
-    if(el && el !== active) el.value = val.toFixed(1);
-  };
-  syncField('sheet-rect-left', s.rect.left);
-  syncField('sheet-rect-top', s.rect.top);
-  syncField('sheet-rect-right', s.rect.right);
-  syncField('sheet-rect-bottom', s.rect.bottom);
+  [['sheet-rect-left',R.left],['sheet-rect-top',R.top],['sheet-rect-right',R.right],['sheet-rect-bottom',R.bottom]].forEach(([id,v]) => {
+    const el = document.getElementById(id); if(el && el !== active) el.value = v.toFixed(1);
+  });
+  const outline = document.getElementById('sheet-rect-outline');
   if(outline){
-    outline.style.left = s.rect.left+'%';
-    outline.style.top = s.rect.top+'%';
-    outline.style.width = (s.rect.right-s.rect.left)+'%';
-    outline.style.height = (s.rect.bottom-s.rect.top)+'%';
+    outline.style.left = R.left+'%'; outline.style.top = R.top+'%';
+    outline.style.width = (R.right-R.left)+'%'; outline.style.height = (R.bottom-R.top)+'%';
   }
+  const b = sheetBlockPx(s);
+  const px = v => v/s.naturalW*100, py = v => v/s.naturalH*100;
   const linesEl = document.getElementById('sheet-grid-lines');
   if(linesEl){
-    const w = s.rect.right - s.rect.left, h = s.rect.bottom - s.rect.top;
+    const bx = px(b.x0), by = py(b.y0), bw = px(b.bw), bh = py(b.bh);
     let html = '';
-    for(let c=1; c<s.cols; c++){
-      const x = s.rect.left + (c/s.cols)*w;
-      html += `<div style="position:absolute;left:${x}%;top:${s.rect.top}%;width:1px;height:${h}%;background:rgba(255,204,51,.7);"></div>`;
+    const col = 'rgba(255,204,51,.95)';
+    for(let c=0; c<s.cols; c++){
+      const xl = px(b.x0 + c*(b.cw + s.gapX)), xr = xl + px(b.cw);
+      html += `<div style="position:absolute;left:${xl}%;top:${by}%;width:1px;height:${bh}%;background:${col};pointer-events:none;"></div>`;
+      html += `<div style="position:absolute;left:${xr}%;top:${by}%;width:1px;height:${bh}%;background:${col};pointer-events:none;"></div>`;
     }
-    for(let rI=1; rI<s.rows; rI++){
-      const y = s.rect.top + (rI/s.rows)*h;
-      html += `<div style="position:absolute;left:${s.rect.left}%;top:${y}%;width:${w}%;height:1px;background:rgba(255,204,51,.7);"></div>`;
-    }
-    // Zweite, innere Linie pro Zelle = die TATSÄCHLICHE Zuschnittgrenze (nach Anwendung von
-    // "Rand einwärts"), separat von der gelben Roh-Raster-Linie oben (die weiterhin exakt auf der
-    // Zellgrenze/dem Bildrand liegt). So sieht man live, ob der schwarze Rand/Abstand im Quellbild
-    // schon ausserhalb dieser roten Linie liegt — erst dann ist der Zuschnitt wirklich randgenau,
-    // ohne dass man das Gesamtrechteck (gelbe Griffe) selbst verschieben müsste.
-    const cellW = w / s.cols, cellH = h / s.rows;
-    // Doppelte Rasterlinien: pro Zwischenraum die rechte Kante der linken und die linke Kante der rechten Karte
-    {
-      const rw = (s.rect.right - s.rect.left), rh = (s.rect.bottom - s.rect.top);
-      const cwP = s.cardW/s.naturalW*100, chP = s.cardH/s.naturalH*100;
-      const gxP = s.cols>1 ? (rw - s.cols*cwP)/(s.cols-1) : 0, gyP = s.rows>1 ? (rh - s.rows*chP)/(s.rows-1) : 0;
-      const ln = (st) => `<div style="position:absolute;pointer-events:none;background:#ff5050;${st}"></div>`;
-      for(let c=0; c<s.cols; c++){
-        const x0 = s.rect.left + c*(cwP+gxP), x1 = x0 + cwP;
-        if(c>0) html += ln(`left:${x0}%;top:${s.rect.top}%;width:1px;height:${rh}%;`);
-        if(c<s.cols-1) html += ln(`left:${x1}%;top:${s.rect.top}%;width:1px;height:${rh}%;`);
-      }
-      for(let rI=0; rI<s.rows; rI++){
-        const y0 = s.rect.top + rI*(chP+gyP), y1 = y0 + chP;
-        if(rI>0) html += ln(`left:${s.rect.left}%;top:${y0}%;width:${rw}%;height:1px;`);
-        if(rI<s.rows-1) html += ln(`left:${s.rect.left}%;top:${y1}%;width:${rw}%;height:1px;`);
-      }
-    }
-    const hasCrop = (s.insL|| s.insL||s.insT||s.insR||s.insB||s.offX||s.offY);
-    if(hasCrop){
-      for(let rI=0; rI<s.rows; rI++){
-        for(let c=0; c<s.cols; c++){
-          const g = sheetCellSrcRect(s, rI, c);
-          const x = g.sx / s.naturalW * 100, y = g.sy / s.naturalH * 100;
-          const ww = g.sw / s.naturalW * 100, hh = g.sh / s.naturalH * 100;
-          html += `<div style="position:absolute;left:${x}%;top:${y}%;width:${ww}%;height:${hh}%;border:1px dashed #ff5050;box-sizing:border-box;pointer-events:none;"></div>`;
-        }
-      }
+    for(let r=0; r<s.rows; r++){
+      const yt = py(b.y0 + r*(b.ch + s.gapY)), yb = yt + py(b.ch);
+      html += `<div style="position:absolute;left:${bx}%;top:${yt}%;width:${bw}%;height:1px;background:${col};pointer-events:none;"></div>`;
+      html += `<div style="position:absolute;left:${bx}%;top:${yb}%;width:${bw}%;height:1px;background:${col};pointer-events:none;"></div>`;
     }
     linesEl.innerHTML = html;
   }
-  sheetSyncCardInputs();
-  updateSheetPreviewThumbs();
-}
-// Zentrale Stelle für die Zuschnitt-Geometrie EINER Zelle (in echten Bildpixeln), inkl. "Rand
-// einwärts" — von der Live-Vorschau (5 Beispielkarten + Overlay-Linien) UND vom finalen Zuschnitt
-// aller Zellen (goToSheetAssignStep) gemeinsam genutzt. So bekommt man beim vollen Zuschnitt
-// garantiert exakt das, was die Vorschau vorher gezeigt hat (Kohärenz statt zwei getrennten,
-// potenziell leicht abweichenden Berechnungen).
-function sheetCellSrcRect(s, rowI, colI){
-  const rectPxLeft = s.rect.left/100 * s.naturalW;
-  const rectPxTop = s.rect.top/100 * s.naturalH;
-  const rectPxW = (s.rect.right - s.rect.left)/100 * s.naturalW;
-  const rectPxH = (s.rect.bottom - s.rect.top)/100 * s.naturalH;
-  let cellW = rectPxW / s.cols, cellH = rectPxH / s.rows;
-  if(s.cardAuto){ s.cardW = cellW; s.cardH = cellH; }
-  let baseX = rectPxLeft + colI*cellW, baseY = rectPxTop + rowI*cellH;
-  if(s.cardW > 0 && s.cardH > 0){
-    // Feste Kartengrösse: erste/letzte Karte liegen bündig am gelben Rahmen, Abstände ergeben sich daraus
-    const gapX = s.cols > 1 ? (rectPxW - s.cols*s.cardW)/(s.cols-1) : 0;
-    const gapY = s.rows > 1 ? (rectPxH - s.rows*s.cardH)/(s.rows-1) : 0;
-    baseX = rectPxLeft + colI*(s.cardW + gapX); baseY = rectPxTop + rowI*(s.cardH + gapY);
-    cellW = s.cardW; cellH = s.cardH;
+  const info = document.getElementById('sheet-card-info');
+  if(info){
+    const bad = b.cw < 2 || b.ch < 2;
+    info.innerHTML = bad ? '<span style="color:#d33;">Abstände zu gross — Karten haben keinen Platz mehr.</span>'
+      : `Kartengrösse: <b>${b.cw.toFixed(1)} × ${b.ch.toFixed(1)} px</b> (Verhältnis 1 : ${(b.ch/b.cw).toFixed(2)}, ideal 1 : 1.40)`;
   }
-  const iL = s.insL||0, iT = s.insT||0, iR = s.insR||0, iB = s.insB||0;
-  let sw = cellW * (100 - iL - iR)/100, sh = cellH * (100 - iT - iB)/100;
-  let sx = baseX + cellW*(iL + (s.offX||0))/100;
-  let sy = baseY + cellH*(iT + (s.offY||0))/100;
-  // Ausschnitt bleibt immer im Bild: lieber verschieben als über den Rand hinaus lesen (kein schwarzer Rand)
-  sw = Math.min(sw, s.naturalW); sh = Math.min(sh, s.naturalH);
-  sx = Math.max(0, Math.min(s.naturalW - sw, sx));
-  sy = Math.max(0, Math.min(s.naturalH - sh, sy));
-  return { sx, sy, sw, sh };
+  updateSheetPreviewThumbs();
 }
 function updateSheetPreviewThumbs(){
   // Schneidet sofort 5 Beispielzellen (vier Ecken + Mitte) mit dem aktuellen Rechteck/Raster zu und
