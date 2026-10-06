@@ -462,6 +462,8 @@
      damit die bestehenden transform-Angaben der Elemente unberührt bleiben */
   @keyframes potFly{ 0%{ translate:0 0; scale:1; opacity:1; } 15%{ opacity:1; } 85%{ opacity:1; } 100%{ translate:var(--dx,0cqw) var(--dy,0cqw); scale:.55; opacity:0; } }
   .pot-fly{ position:absolute; z-index:9; transform:translate(-50%,-50%); pointer-events:none; font-family:'Fraunces',serif; font-weight:700; font-size:1.3cqw; color:#fff; background:var(--brass); padding:.25cqw .8cqw; border-radius:99px; text-shadow:0 1px 2px rgba(0,0,0,.5); box-shadow:0 2px 8px rgba(0,0,0,.4); animation:potFly .85s cubic-bezier(.45,.05,.3,1) both; }
+  @keyframes winFly{ 0%{ translate:var(--dx,0cqw) var(--dy,0cqw); scale:.6; opacity:.2; } 20%{ opacity:1; } 100%{ translate:0 0; scale:1; opacity:1; } }
+  .win-fly{ position:absolute; inset:0; pointer-events:none; animation:winFly .85s cubic-bezier(.45,.05,.3,1) both; }
   @keyframes dealIn{ 0%{ translate:var(--dx,0cqw) var(--dy,-9cqw); rotate:-26deg; scale:.5; opacity:0; } 55%{ opacity:1; } 100%{ translate:0 0; rotate:0deg; scale:1; opacity:1; } }
   .deal-in{ animation:dealIn .6s cubic-bezier(.2,.8,.25,1) both; animation-delay:var(--ad,0ms); }
   .board-cards[data-from="0"] > .board-card:nth-child(1){ animation:dealIn .55s cubic-bezier(.2,.8,.25,1) both; animation-delay:calc(var(--ad,0ms) + 0ms); }
@@ -1567,6 +1569,7 @@ function renderOnlineTableViewInner(){
   const currentMaxBet = hs && hs.bets ? Math.max(0, ...Object.values(hs.bets).map(Number)) : 0;
   const toCall = currentMaxBet - myBet;
   const myTurn = hs && hs.current_seat === onlineMySeat && ['preflop','flop','turn','river'].includes(phase);
+  onlineTurnSync(hs, myTurn);
   const actorSeatRow = hs && ['preflop','flop','turn','river'].includes(phase) ? tbl.seats.find(s => s.seat_no === hs.current_seat) : null;
 
   // Eigenes Table-Designer-Layout statt generischer Oval-Positionen — identisch zum
@@ -1702,6 +1705,62 @@ function onlineBetGridProfile(){
   const id = onlineTableOptions(tbl).betGridId;
   return id ? ((currentClub.betGridProfiles||[]).find(p => p.id === id) || null) : null;
 }
+// ---- Timebank: 15 s pro Entscheid, einmal pro 50 Hände +45 s per Knopf ----
+const TB_BASE_S = 15, TB_EXTRA_S = 45, TB_EVERY_HANDS = 50;
+let onlineTurn = null, onlineTurnTimer = null;
+function onlineTbKey(){ return 'chipmate_timebank_' + (currentOnlineTableId || '') + '_' + (currentUser ? currentUser.id : 'anon'); }
+function onlineTbLast(){ try{ const v = localStorage.getItem(onlineTbKey()); return v == null ? null : Number(v); }catch(e){ return null; } }
+function onlineTbHandsLeft(hs){ const l = onlineTbLast(); return l == null ? 0 : Math.max(0, TB_EVERY_HANDS - (hs.hand_no - l)); }
+function onlineTurnRemainingMs(){ return onlineTurn ? onlineTurn.limit - (Date.now() - onlineTurn.t0) : 0; }
+function onlineTurnSync(hs, myTurn){
+  if(!myTurn){ onlineTurn = null; if(onlineTurnTimer){ clearInterval(onlineTurnTimer); onlineTurnTimer = null; } return; }
+  const la = hs.last_action || {};
+  const key = [hs.hand_no, hs.phase, hs.current_seat, la.seat, la.action, la.amount].join('|');
+  if(!onlineTurn || onlineTurn.key !== key) onlineTurn = { key, t0: Date.now(), limit: TB_BASE_S * 1000 };
+  if(!onlineTurnTimer) onlineTurnTimer = setInterval(onlineTurnTick, 250);
+}
+function onlineTurnTick(){
+  const hs = onlineHandState;
+  if(!onlineTurn || !currentOnlineTableId || !hs || hs.current_seat !== onlineMySeat){
+    if(!onlineTurn || !currentOnlineTableId){ clearInterval(onlineTurnTimer); onlineTurnTimer = null; }
+    return;
+  }
+  const rem = onlineTurnRemainingMs();
+  const c = document.getElementById('tb-count'), f = document.getElementById('tb-fill');
+  if(c){ c.textContent = Math.max(0, Math.ceil(rem/1000)) + ' s'; c.style.color = rem < 5000 ? 'var(--red)' : 'inherit'; }
+  if(f){ f.style.width = Math.max(0, Math.min(100, rem / onlineTurn.limit * 100)) + '%'; f.style.background = rem < 5000 ? 'var(--red)' : 'var(--brass)'; }
+  if(rem <= 0 && !onlineBusy){
+    const myBet = hs.bets ? Number(hs.bets[String(onlineMySeat)] || 0) : 0;
+    const maxBet = hs.bets ? Math.max(0, ...Object.values(hs.bets).map(Number)) : 0;
+    onlineTurn.limit = 1e12;   // nur einmal auslösen
+    closeModal && closeModal();
+    callSubmitAction(maxBet - myBet > 0.001 ? 'fold' : 'check');
+  }
+}
+function onlineUseTimebank(){
+  const hs = onlineHandState;
+  if(!hs || !onlineTurn || onlineTbHandsLeft(hs) > 0) return;
+  try{ localStorage.setItem(onlineTbKey(), String(hs.hand_no)); }catch(e){}
+  onlineTurn.limit += TB_EXTRA_S * 1000;
+  showToast('Timebank: +' + TB_EXTRA_S + ' s');
+  render();
+}
+function onlineTimerHtml(hs){
+  if(!onlineTurn) return '';
+  const rem = onlineTurnRemainingMs();
+  const left = onlineTbHandsLeft(hs);
+  return `<div style="display:flex;align-items:center;gap:10px;margin:10px 0 6px;">
+      <div style="font-weight:700;font-size:16px;flex:1;">Du bist am Zug</div>
+      <div id="tb-count" style="font-family:'Fraunces',serif;font-weight:700;font-size:18px;${rem < 5000 ? 'color:var(--red);' : ''}">${Math.max(0, Math.ceil(rem/1000))} s</div>
+    </div>
+    <div style="height:5px;background:rgba(0,0,0,.12);border-radius:3px;overflow:hidden;margin-bottom:12px;"><div id="tb-fill" style="height:100%;width:${Math.max(0, Math.min(100, rem/onlineTurn.limit*100))}%;background:${rem < 5000 ? 'var(--red)' : 'var(--brass)'};"></div></div>`;
+}
+function onlineTimebankBtnHtml(hs){
+  const left = onlineTbHandsLeft(hs);
+  return left > 0
+    ? `<button class="btn btn-secondary action-disabled" disabled style="margin-top:8px;width:100%;padding:6px;font-size:12px;" title="Timebank wieder verfügbar in ${left} Händen">⏱ +${TB_EXTRA_S} s (wieder in ${left} Händen)</button>`
+    : `<button class="btn btn-secondary" style="margin-top:8px;width:100%;padding:6px;font-size:13px;" onclick="onlineUseTimebank()">⏱ Timebank +${TB_EXTRA_S} s <span style="opacity:.6;font-size:11px;">(1× pro ${TB_EVERY_HANDS} Hände)</span></button>`;
+}
 function renderOnlineActionBar(toCall, myStack, hs, tbl){
   const myBet = hs.bets ? Number(hs.bets[String(onlineMySeat)] || 0) : 0;
   const currentMaxBet = hs.bets ? Math.max(0, ...Object.values(hs.bets).map(Number)) : 0;
@@ -1729,13 +1788,14 @@ function renderOnlineActionBar(toCall, myStack, hs, tbl){
   }
   const boxHtml = onlineBetBoxLabel && canRaise ? onlineBetBoxHtml(onlineBetBoxLabel, minRaiseTotal, allInTotal, tbl) : '';
   return `
-    <div style="font-weight:700;font-size:16px;margin:10px 0 14px;">Du bist am Zug</div>
+    ${onlineTimerHtml(hs) || '<div style="font-weight:700;font-size:16px;margin:10px 0 14px;">Du bist am Zug</div>'}
     <div style="display:flex;gap:6px;flex-wrap:wrap;">
       <button class="btn btn-primary" style="${btnStyle}" onclick="onlineRequestFold(${toCall})">Fold</button>
       ${checkCallBtn}
       ${raiseBtn}
     </div>
     ${allinBtn}
+    ${onlineTimebankBtnHtml(hs)}
     <div id="bet-amount-box">${boxHtml}</div>`;
 }
 function onlineBetBoxHtml(label, minTo, allInTotal, tbl){
@@ -11072,12 +11132,20 @@ function renderHandFlowUI(s){
           const sdWinner = Object.keys(resultWinnings).find(pid => resultWinnings[pid]>0.0001 && isSevenDeuce(handFlow.holeCards[pid]));
           if(sdWinner) sevenDeuce = computeSevenDeuceBounty(s, sdWinner, projected);
         }
+        // Pot fliegt aus der Mitte zum Gewinner (läuft per negativem animation-delay auch über Neu-Rendern weiter)
+        if(!handFlow.winFlyT0){ handFlow.winFlyT0 = Date.now(); onlineSound('win'); }
+        const winEl = Date.now() - handFlow.winFlyT0;
+        const wl = getActiveLayout(s.id);
+        const potX = (wl && wl.potX!=null) ? wl.potX : 50, potY = (wl && wl.potY!=null) ? wl.potY : 50;
         return Object.keys(resultWinnings).filter(pid => resultWinnings[pid]>0.0001).map(pid => {
-          let html = betLineChipHtml(posOf(pid), resultWinnings[pid], chipProfileForTable, s);
+          const sp = posOf(pid);
+          let html = betLineChipHtml(sp, resultWinnings[pid], chipProfileForTable, s);
           if(sevenDeuce && sevenDeuce.winnerId===pid){
-            html += betLineChipHtml(posOf(pid), sevenDeuce.total, chipProfileForTable, s, 'bonus');
+            html += betLineChipHtml(sp, sevenDeuce.total, chipProfileForTable, s, 'bonus');
           }
-          return html;
+          if(winEl >= 900) return html;
+          const bx = sp.chipX != null ? sp.chipX : sp.left + (50-sp.left)*0.38, by = sp.chipY != null ? sp.chipY : sp.top + (50-sp.top)*0.38;
+          return `<div class="win-fly" style="--dx:calc(${(potX-bx).toFixed(1)} * 1cqw);--dy:calc(${(potY-by).toFixed(1)} * .55cqw);animation-delay:${-winEl}ms;">${html}</div>`;
         }).join('');
       }
       return handFlow.seats.map((pid) => betLineChipHtml(posOf(pid), handFlow.streetContrib[pid]||0, chipProfileForTable, s)).join('');
@@ -11177,7 +11245,7 @@ function renderHandFlowUI(s){
               ` : (handFlow.board.length ? `<div class="board-cards"${handFlowBoardAnimAttr()}>${handFlow.board.map(cardChipHtml).join('')}</div>` : '')}
             </div>
           </div>
-          <div class="pot-center${justCollected ? ' collecting' : ''}" style="${potCenterStyleAttr(handFlow.seats.length, s.id)}">
+          <div class="pot-center${justCollected ? ' collecting' : ''}" style="${potCenterStyleAttr(handFlow.seats.length, s.id)}${(handFlow.uncontestedWinner || handFlow.sidePotWinnings) ? 'visibility:hidden;' : ''}">
             ${potCenterDisplayAmount() > 0.0001 ? chipStackHtml(potCenterDisplayAmount(), chipProfileForTable) : ''}
             <div class="amt">${fmtChipPlain(potTotal())}</div>
             ${potBreakdownHtml()}
