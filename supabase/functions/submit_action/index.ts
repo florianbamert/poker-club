@@ -65,7 +65,7 @@ function json(body: unknown, status = 200): Response {
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS_HEADERS });
   try {
-    const { table_id, action: actionIn, amount } = await req.json() as { table_id: string; action: ActionType | 'timeout' | 'timebank'; amount?: number };
+    const { table_id, action: actionIn, amount } = await req.json() as { table_id: string; action: ActionType | 'timeout' | 'timebank' | 'sitback'; amount?: number };
     let action = actionIn as ActionType;
     if (!table_id || !actionIn) return json({ error: 'table_id oder action fehlt' }, 400);
 
@@ -75,6 +75,13 @@ Deno.serve(async (req) => {
     if (userErr || !user) return json({ error: 'unauthorized' }, 401);
 
     const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+
+    // "Ich bin wieder da": hebt den Sit-out nach einem Timeout auf (Spalte sitting_out aus chipmate_online_timebank.sql)
+    if (actionIn === 'sitback') {
+      const { error: sbErr } = await admin.from('online_seats').update({ sitting_out: false }).eq('table_id', table_id).eq('user_id', user.id);
+      if (sbErr) return json({ error: sbErr.message }, 400);
+      return json({ ok: true });
+    }
 
     const { data: stateRow } = await admin.from('online_hand_state').select('*').eq('table_id', table_id).single();
     if (!stateRow) return json({ error: 'no_hand' }, 400);
@@ -100,6 +107,7 @@ Deno.serve(async (req) => {
 
     // Zeitkontrolle (benötigt chipmate_online_timebank.sql: Spalten turn_deadline / timebank_last_hand)
     const hasDeadlineCol = 'turn_deadline' in stateRow;
+    let timedOutSeat: number | null = null;
     if (actionIn === 'timebank') {
       if (!hasDeadlineCol) return json({ error: 'timebank_not_supported' }, 400);
       if (stateRow.current_seat !== actingSeat || !BETTING_PHASES.includes(stateRow.phase)) return json({ error: 'not_your_turn' }, 400);
@@ -125,6 +133,7 @@ Deno.serve(async (req) => {
       if (rem > 0) return json({ ok: false, error: 'not_expired', remaining_ms: Math.max(0, rem - GRACE_MS) });
       actingSeat = stateRow.current_seat as number;
       action = 'fold';
+      timedOutSeat = actingSeat;
     }
 
     const result = applyAction(state, seats, actingSeat, action, amount);
@@ -171,6 +180,9 @@ Deno.serve(async (req) => {
         await admin.from('online_seats').update({ stack: newStacks[seatNo] }).eq('table_id', table_id).eq('seat_no', seatNo);
       }
     }
+
+    // Wer sein Zeitlimit überschreitet, ist ausgesetzt, bis er "Ich bin wieder da" drückt
+    if (timedOutSeat !== null) await admin.from('online_seats').update({ sitting_out: true }).eq('table_id', table_id).eq('seat_no', timedOutSeat);
 
     let handFinished = false;
     let payouts: Record<string, number> = {};

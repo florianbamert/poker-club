@@ -915,7 +915,7 @@ function scheduleAutoNextHand(){
     const cur = onlineHandState;
     if(!cur || Number(cur.hand_no) !== handNo || cur.phase !== 'done') return;   // läuft schon
     const t = onlineTables.find(x => x.id === tableId);
-    const stacked = (t ? t.seats : []).filter(x => x.user_id && Number(x.stack || 0) > 0);
+    const stacked = (t ? t.seats : []).filter(x => x.user_id && Number(x.stack || 0) > 0 && !x.sitting_out);
     if(stacked.length < 2){ onlineAutoKey = ''; return; }     // z.B. wer pleite ist, muss nachkaufen — danach wird neu geplant
     const starter = Math.min(...stacked.map(x => x.seat_no));
     if(!isFallback && starter !== onlineMySeat) return;
@@ -980,7 +980,7 @@ function onlineSound(kind, opt){
   if(kind === 'fold'){            // Rauschen, abfallender Filter ("Karten werfen")
     _noiseBurst(ac, t, 0.5, { type:'bandpass', f0:3200, f1:2200, q:0.45, gain:0.06, attack:0.11, out });
   } else if(kind === 'check'){    // doppeltes Klopfen auf den Tisch
-    [0, 0.1].forEach(dt => { _tone(ac, t+dt, 0.09, 190, 0.5, out, 85); _noiseBurst(ac, t+dt, 0.022, { type:'bandpass', f0:1400, q:1.2, gain:0.22, out }); });
+    [0, 0.1].forEach(dt => { _tone(ac, t+dt, 0.09, 190, 0.17, out, 85); _noiseBurst(ac, t+dt, 0.022, { type:'bandpass', f0:1400, q:1.2, gain:0.07, out }); });
   } else if(kind === 'call' || kind === 'raise'){
     _chipClatter(ac, t, out, kind === 'raise' ? 6 : 4);
   } else if(kind === 'allin'){
@@ -989,7 +989,7 @@ function onlineSound(kind, opt){
     _chipClatter(ac, t, out, 8);
   } else if(kind === 'deal'){     // Karten-Swish, mehrfach gestaffelt
     const n = Math.max(1, Math.min(8, (opt && opt.n) || 1));
-    for(let i=0;i<n;i++) _noiseBurst(ac, t + i*0.11, 0.08, { type:'highpass', f0:2600, f1:6500, q:0.8, gain:0.22, attack:0.012, out });
+    for(let i=0;i<n;i++) _noiseBurst(ac, t + i*0.11, 0.08, { type:'highpass', f0:2600, f1:6500, q:0.8, gain:0.07, attack:0.012, out });
   }
 }
 
@@ -1110,10 +1110,10 @@ async function onlinePollOnce(tableId){
   onlinePollTick++;
   // Realtime-Verbindung abgerissen? Dann Kanal neu aufbauen (Handy-Standby, WLAN-Wechsel ...)
   if(onlinePublicChannel && !['joined','joining'].includes(onlinePublicChannel.state)) subscribePublicChannel(tableId);
-  const seatSig = (arr) => (arr||[]).map(x => `${x.seat_no}:${x.user_id}:${x.stack}`).sort().join('|');
+  const seatSig = (arr) => (arr||[]).map(x => `${x.seat_no}:${x.user_id}:${x.stack}:${x.sitting_out ? 1 : 0}`).sort().join('|');
   // Sitzbelegung ist nicht per Realtime verbunden → alle ~3 s nachsehen
   if(onlinePollTick % 2 === 0){
-    const { data: seats } = await sb.from('online_seats').select('seat_no,user_id,stack').eq('table_id', tableId);
+    const { data: seats } = await sb.from('online_seats').select('seat_no,user_id,stack,sitting_out').eq('table_id', tableId);
     if(currentOnlineTableId !== tableId) return;
     const t = onlineTables.find(x => x.id === tableId);
     if(seats && seatSig(seats) !== seatSig(t && t.seats)){ await refreshOnlineTableAndSeat(); return; }
@@ -1352,6 +1352,15 @@ async function callStartHand(expectedHandNo){
   } finally { onlineBusy = false; }
 }
 
+async function onlineSitBack(){
+  if(onlineBusy) return;
+  onlineBusy = true;
+  try{
+    const { data, error } = await sb.functions.invoke('submit_action', { body: { table_id: currentOnlineTableId, action: 'sitback' } });
+    if(error || (data && data.error)){ showToast('Fehler: ' + await edgeErrorText(data, error)); return; }
+    await refreshOnlineTableAndSeat();
+  } finally { onlineBusy = false; }
+}
 async function callSubmitAction(action, amount){
   if(onlineBusy) return;
   onlineBusy = true;
@@ -1408,7 +1417,8 @@ function onlinePokerSeatHtml(slot, seatRow, seatNo, hs, isMe){
   const displayObj = playerObj || { firstName: seatRow.user_email || 'Spieler', lastName:'', avatarColor:'#8A8A8A' };
   const phase = hs ? hs.phase : 'waiting';
   const isActor = hs && hs.current_seat === seatNo && ['preflop','flop','turn','river'].includes(phase);
-  const folded = hs && hs.folded && hs.folded[String(seatNo)];
+  const sittingOut = !!seatRow.sitting_out;
+  const folded = sittingOut || (hs && hs.folded && hs.folded[String(seatNo)]);
   const isAllIn = hs && hs.all_in && hs.all_in[String(seatNo)] && !folded;
   const isDealer = hs && hs.dealer_seat === seatNo;
   // Welche Hole Cards gezeigt werden, hängt NICHT mehr von einem pauschalen "revealAll"
@@ -1429,7 +1439,7 @@ function onlinePokerSeatHtml(slot, seatRow, seatNo, hs, isMe){
   }
 
   const nameInnerHtml = `<div class="seat-name${isActor?' seat-turn-blink':''}" style="color:${textColor};transform:scale(${slot.nameScale});transform-origin:center;">${escapeHtml(fullName(displayObj))}</div>`;
-  const statusBadge = folded ? `<div class="action-badge" style="background:#8A8A8A;">FOLD</div>` : (isAllIn ? `<div class="action-badge" style="background:var(--brass);">ALL-IN</div>` : '');
+  const statusBadge = sittingOut ? `<div class="action-badge" style="background:#8A8A8A;">SIT OUT</div>` : folded ? `<div class="action-badge" style="background:#8A8A8A;">FOLD</div>` : (isAllIn ? `<div class="action-badge" style="background:var(--brass);">ALL-IN</div>` : '');
   const stackRowHtml = `<div class="stack-row"><div class="seat-stack">${fmtChipPlain(seatRow.stack)}</div></div>`;
   const stackInnerHtml = `<div class="${isActor?'seat-turn-blink':''}" style="color:${textColor};transform:scale(${slot.stackScale});transform-origin:center;">${stackRowHtml}</div>`;
   const standaloneNameHtml = useAbsoluteName ? `<div style="position:absolute;left:${slot.nameX}%;top:${slot.nameY}%;transform:translate(-50%,-50%);z-index:5;max-width:16cqw;">${nameInnerHtml}</div>` : '';
@@ -1561,7 +1571,7 @@ function renderOnlineTableViewInner(){
   const isFinished = tbl.status === 'finished';
   // "Hand starten" braucht mindestens zwei besetzte Sitze MIT Stack > 0 (siehe deal_hand
   // SQL-Funktion) — funktioniert jetzt für 2 bis seat_count Sitze, nicht mehr nur Heads-up.
-  const stackedSeats = seatedRows.filter(s => Number(s.stack || 0) > 0);
+  const stackedSeats = seatedRows.filter(s => Number(s.stack || 0) > 0 && !s.sitting_out);
   const canStart = !isFinished && (!hs || phase === 'done' || phase === 'waiting') && stackedSeats.length >= 2;
   const canClose = !isFinished && (!hs || phase === 'done' || phase === 'waiting') && seatedRows.length >= 2 && seatedRows.every(s => s.player_id);
 
@@ -1639,6 +1649,7 @@ function renderOnlineTableViewInner(){
         </div>
       </div>
       <div class="panel action-pane light" style="margin-bottom:0;position:relative;padding-top:14px;">
+        ${mySeatRow && mySeatRow.sitting_out ? `<div class="status-banner" style="margin:10px 0;text-align:center;background:#FFF1F0;border-color:#F0B8B3;color:#8A2A20;"><div style="margin-bottom:8px;"><strong>Du bist ausgesetzt</strong> (Zeit abgelaufen). Du wirst nicht mehr ausgeteilt.</div><button class="btn btn-primary" onclick="onlineSitBack()">Ich bin wieder da</button></div>` : ''}
         ${hs && hs.hand_no ? `<span class="street-pill">Hand #${hs.hand_no} · ${({preflop:'Preflop',flop:'Flop',turn:'Turn',river:'River',showdown:'Showdown',done:'Beendet'})[phase] || phase}</span>` : ''}
         ${canStart && hs && hs.hand_no && phase === 'done' ? `<div style="text-align:center;color:var(--ink-soft);font-size:13px;padding:6px 0;">Nächste Hand startet automatisch …</div>` : ''}
         ${canStart || canClose ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0;">
