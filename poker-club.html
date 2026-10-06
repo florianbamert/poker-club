@@ -1035,6 +1035,8 @@ async function reallyLeaveOnlineSeat(){
 }
 
 function backToOnlineLobby(){
+  const linked = (currentClub.sessions || []).find(x => x.onlineTableId === currentOnlineTableId);
+  if(linked){ resetOnlineTableState(); currentSessionId = linked.id; setView('sessions'); return; }
   resetOnlineTableState();
   onlineLobbyLoaded = false;
   setView('online');
@@ -1439,7 +1441,7 @@ function renderOnlineTableViewInner(){
     <div class="view-head">
       <div><h1>Online-Tisch</h1><p class="lede" style="margin-bottom:0">Blinds ${formatMoney(tbl.small_blind)} / ${formatMoney(tbl.big_blind)} · ${seatCount} Sitze${hs && hs.hand_no ? ` · Hand #${hs.hand_no}` : ''}${isFinished ? ' · Tisch abgeschlossen' : ''}</p></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <button class="btn btn-secondary btn-sm" onclick="backToOnlineLobby()">← Lobby</button>
+        <button class="btn btn-secondary btn-sm" onclick="backToOnlineLobby()">← Session</button>
         ${!isFinished ? `<button class="btn btn-secondary btn-sm" onclick="addOnlineBuyin()">+ Nachkaufen</button>` : ''}
         ${!isFinished ? `<button class="btn btn-secondary btn-sm" onclick="leaveOnlineSeat()">Platz verlassen</button>` : ''}
       </div>
@@ -1503,7 +1505,7 @@ function renderOnlineSeatPicker(tbl){
   return `
     <div class="view-head">
       <div><h1>Online-Tisch</h1><p class="lede" style="margin-bottom:0">Blinds ${formatMoney(tbl.small_blind)} / ${formatMoney(tbl.big_blind)} · ${seatCount} Sitze</p></div>
-      <button class="btn btn-secondary btn-sm" onclick="backToOnlineLobby()">← Lobby</button>
+      <button class="btn btn-secondary btn-sm" onclick="backToOnlineLobby()">← Session</button>
     </div>
     <div style="display:flex;gap:16px;justify-content:center;flex-wrap:wrap;">
       ${Array.from({length: seatCount}, (_, seatNo) => seatNo).map(seatNo => {
@@ -1806,13 +1808,13 @@ const translations = {
     modal_join_title:'Club beitreten', modal_join_hint:'Gib den 5-stelligen Code eurer Runde ein.',
     label_club_code:'Club-Code', placeholder_club_code:'z.B. K7QRM',
     err_need_code:'Bitte einen Code eingeben.', err_club_not_found:'Kein Club mit diesem Code gefunden.', btn_join:'Beitreten',
-    nav_dashboard:'Dashboard', nav_sessions:'Sessions', nav_players:'Players', nav_stats:'Stats', nav_hands:'Hands', nav_online:'Online Poker', nav_club:'Club',
+    nav_dashboard:'Dashboard', nav_sessions:'Sessions', nav_players:'Players', nav_stats:'Stats', nav_hands:'Poker Play', nav_online:'Online Poker', nav_club:'Club',
     btn_switch_club:'Club wechseln',
     dash_title:'Dashboard', dash_lede:'Überblick über {club}.',
     stat_sessions_played:'Gespielte Sessions', stat_biggest_pot:'Grösster registrierter Pot', stat_avg_players:'Ø Spieler pro Session',
     panel_last_sessions:'Letzte Sessions', panel_last_hands:'Letzte Hände', btn_view_all:'Alle ansehen',
     empty_no_sessions_title:'Noch keine Sessions gespielt.', empty_no_sessions_text:'Sobald ihr die erste Runde erfasst, taucht sie hier auf.',
-    empty_no_hands_title:'Noch keine Hand registriert.', empty_no_hands_text:'Denkwürdige Hände landen hier, sobald ihr sie festhaltet.',
+    empty_no_hands_title:'Poker Play', empty_no_hands_text:'Denkwürdige Hände landen hier, sobald ihr sie festhaltet.',
     sessions_title:'Sessions', sessions_lede:'Alle Runden von {club}.', btn_new_session:'+ Neue Session',
     filter_all:'Alle', filter_open:'Offen', filter_closed:'Beendet',
     badge_cash:'Cash Game', badge_tournament:'Turnier', badge_open:'Offen', badge_closed:'Beendet',
@@ -1824,7 +1826,7 @@ const translations = {
     label_buyin_amount:'Buy-in Betrag', label_start_chips:'Start-Chips',
     label_notes_optional:'Notizen', sublabel_optional:'(optional)', placeholder_notes:'z.B. Straddle erlaubt',
     label_session_pin:'PIN für diese Session', sublabel_pin_digits:'(4 Ziffern, frei wählbar)',
-    err_need_date:'Bitte ein Datum wählen.', err_pin_format:'PIN muss aus genau 4 Ziffern bestehen.', err_need_buyin_amount:'Bitte einen Buy-in-Betrag grösser 0 eingeben.', err_need_start_chips:'Bitte Start-Chips grösser 0 eingeben.', placeholder_amount:'Betrag eingeben', placeholder_chip_amount:'Anzahl Chips', btn_deal:'🤝 Deal', deal_modal_title:'Deal vereinbaren', deal_modal_hint:'Teile den verbleibenden Preispool frei unter den verbliebenen Spielern auf.', label_remaining_pool:'Verbleibender Pool', err_deal_sum:'Die Beträge ergeben {sum} statt {expected}.', btn_apply_deal:'Deal bestätigen', label_place:'Platz', badge_deal:'Deal', net_label:'Netto', hands_title:'Hands', hands_lede:'Halte denkwürdige Hände fest, Session für Session.', label_select_session:'Session auswählen', no_session_selected:'Wähle oben eine Session aus, um Hände zu erfassen.', panel_table_mode:'Tischmodus', label_hand_number:'Hand #{n}', label_dealer:'Button', label_sb:'Small Blind', label_bb:'Big Blind', btn_record_hand:'Hand erfassen', btn_skip_hand:'Hand überspringen', not_enough_players:'Mindestens 2 aktive Spieler nötig für den Tischmodus.', panel_recent_hands:'Erfasste Hände', empty_no_hands_yet:'Noch keine Hand in dieser Session erfasst.', record_hand_modal_title:'Hand #{n} erfassen', label_winners:'Gewinner', label_pot_size:'Pot-Grösse', label_story_optional:'Story', placeholder_story:'z.B. Set of Kings gegen Flush auf dem River...', label_tags_optional:'Tags', tag_bad_beat:'Bad Beat', tag_cooler:'Cooler', tag_bluff:'Bluff', tag_hero_call:'Hero Call', tag_seven_deuce:'🐍 7-2 Game', skipped_tag:'Übersprungen', hand_unknown:'Hand unbekannt', label_action_prompt:'Am Zug: {name}', label_pot_so_far:'Pot bisher', btn_cancel_hand:'Hand abbrechen', label_strict_mode:'Session anhand Hände abrechnen', warning_strict_mode_text:'⚠️ Diese Session wird anhand der erfassten Hände abgerechnet. Jede Hand muss vollständig und korrekt erfasst werden — übersprungene oder unvollständige Hände verfälschen das Ergebnis.', label_uncontested:'{name} gewinnt unangefochten', btn_save_hand:'Hand speichern', label_bet_amount:'Betrag', btn_confirm_amount:'Bestätigen', session_is_closed:'Diese Session ist bereits abgeschlossen — es können keine weiteren Hände erfasst werden.', label_allin_showdown:'🔥 All-in — restliche Karten werden automatisch aufgedeckt', label_show_holecards:'Hole Cards zeigen', label_hidden_cards:'verdeckt', btn_go_to_hands:'🂠 Hände zu dieser Session erfassen', btn_create_session:'Session erstellen',
+    err_need_date:'Bitte ein Datum wählen.', err_pin_format:'PIN muss aus genau 4 Ziffern bestehen.', err_need_buyin_amount:'Bitte einen Buy-in-Betrag grösser 0 eingeben.', err_need_start_chips:'Bitte Start-Chips grösser 0 eingeben.', placeholder_amount:'Betrag eingeben', placeholder_chip_amount:'Anzahl Chips', btn_deal:'🤝 Deal', deal_modal_title:'Deal vereinbaren', deal_modal_hint:'Teile den verbleibenden Preispool frei unter den verbliebenen Spielern auf.', label_remaining_pool:'Verbleibender Pool', err_deal_sum:'Die Beträge ergeben {sum} statt {expected}.', btn_apply_deal:'Deal bestätigen', label_place:'Platz', badge_deal:'Deal', net_label:'Netto', hands_title:'Poker Play', hands_lede:'Halte denkwürdige Hände fest, Session für Session.', label_select_session:'Session auswählen', no_session_selected:'Wähle oben eine Session aus, um Hände zu erfassen.', panel_table_mode:'Tischmodus', label_hand_number:'Hand #{n}', label_dealer:'Button', label_sb:'Small Blind', label_bb:'Big Blind', btn_record_hand:'Hand erfassen', btn_skip_hand:'Hand überspringen', not_enough_players:'Mindestens 2 aktive Spieler nötig für den Tischmodus.', panel_recent_hands:'Erfasste Hände', empty_no_hands_yet:'Noch keine Hand in dieser Session erfasst.', record_hand_modal_title:'Hand #{n} erfassen', label_winners:'Gewinner', label_pot_size:'Pot-Grösse', label_story_optional:'Story', placeholder_story:'z.B. Set of Kings gegen Flush auf dem River...', label_tags_optional:'Tags', tag_bad_beat:'Bad Beat', tag_cooler:'Cooler', tag_bluff:'Bluff', tag_hero_call:'Hero Call', tag_seven_deuce:'🐍 7-2 Game', skipped_tag:'Übersprungen', hand_unknown:'Hand unbekannt', label_action_prompt:'Am Zug: {name}', label_pot_so_far:'Pot bisher', btn_cancel_hand:'Hand abbrechen', label_strict_mode:'Session anhand Hände abrechnen', warning_strict_mode_text:'⚠️ Diese Session wird anhand der erfassten Hände abgerechnet. Jede Hand muss vollständig und korrekt erfasst werden — übersprungene oder unvollständige Hände verfälschen das Ergebnis.', label_uncontested:'{name} gewinnt unangefochten', btn_save_hand:'Hand speichern', label_bet_amount:'Betrag', btn_confirm_amount:'Bestätigen', session_is_closed:'Diese Session ist bereits abgeschlossen — es können keine weiteren Hände erfasst werden.', label_allin_showdown:'🔥 All-in — restliche Karten werden automatisch aufgedeckt', label_show_holecards:'Hole Cards zeigen', label_hidden_cards:'verdeckt', btn_go_to_hands:'🂠 Hände zu dieser Session erfassen', btn_create_session:'Session erstellen',
     session_back:'← Zurück zu Sessions',
     unlocked_banner:'🔓 Entsperrt auf diesem Gerät — dein privater PIN: {pin} (nur für dich, falls du dich neu einloggen musst — nicht teilen)', btn_lock:'Sperren',
     locked_banner_text:'🔒 Diese Session ist gesperrt.', placeholder_pin:'PIN', btn_unlock:'Entsperren', btn_forgot_pin:'PIN vergessen?',
@@ -1852,7 +1854,7 @@ const translations = {
     err_need_names:'Bitte Vor- und Nachname eingeben.', btn_create_player:'Erstellen',
     edit_player_title:'Spieler bearbeiten', btn_save:'Speichern',
     placeholder_stats_title:'Stats', placeholder_stats_text:'Leaderboard, Geld-auf-Tisch-Verlauf und Cash-Game/Turnier-Auswertung — folgt als Nächstes.',
-    placeholder_hands_title:'Hands', placeholder_hands_text:'Der Hand-für-Hand-Modus mit Button/SB/BB-Rotation und Kartenpicker — folgt danach.',
+    placeholder_hands_title:'Poker Play', placeholder_hands_text:'Der Hand-für-Hand-Modus mit Button/SB/BB-Rotation und Kartenpicker — folgt danach.',
     toast_need_chipcount:'Bitte zuerst den finalen Chipcount eintragen (auch 0, falls Bust-out).',
     nav_settings:'Einstellungen', nav_support:'Support', settings_title:'Einstellungen', settings_lede:'Payout-Vorlagen für Turniere von {club}.',
     panel_payout_templates:'Turnier-Payoutstrukturen', btn_new_template:'+ Neue Vorlage',
@@ -1882,13 +1884,13 @@ const translations = {
     modal_join_title:'Rejoindre un club', modal_join_hint:'Entrez le code à 5 caractères de votre groupe.',
     label_club_code:'Code du club', placeholder_club_code:'p.ex. K7QRM',
     err_need_code:'Veuillez entrer un code.', err_club_not_found:'Aucun club trouvé avec ce code.', btn_join:'Rejoindre',
-    nav_dashboard:'Tableau de bord', nav_sessions:'Sessions', nav_players:'Joueurs', nav_stats:'Stats', nav_hands:'Mains', nav_club:'Club',
+    nav_dashboard:'Tableau de bord', nav_sessions:'Sessions', nav_players:'Joueurs', nav_stats:'Stats', nav_hands:'Poker Play', nav_club:'Club',
     btn_switch_club:'Changer de club',
     dash_title:'Tableau de bord', dash_lede:'Aperçu de {club}.',
     stat_sessions_played:'Sessions jouées', stat_biggest_pot:'Plus gros pot enregistré', stat_avg_players:'Ø Joueurs par session',
     panel_last_sessions:'Dernières sessions', panel_last_hands:'Dernières mains', btn_view_all:'Tout voir',
     empty_no_sessions_title:'Aucune session jouée pour l\'instant.', empty_no_sessions_text:'Dès que vous enregistrez la première, elle apparaît ici.',
-    empty_no_hands_title:'Aucune main enregistrée.', empty_no_hands_text:'Les mains mémorables apparaîtront ici une fois enregistrées.',
+    empty_no_hands_title:'Poker Play', empty_no_hands_text:'Les mains mémorables apparaîtront ici une fois enregistrées.',
     sessions_title:'Sessions', sessions_lede:'Toutes les parties de {club}.', btn_new_session:'+ Nouvelle session',
     filter_all:'Toutes', filter_open:'En cours', filter_closed:'Terminées',
     badge_cash:'Cash Game', badge_tournament:'Tournoi', badge_open:'En cours', badge_closed:'Terminée',
@@ -1900,7 +1902,7 @@ const translations = {
     label_buyin_amount:'Montant du buy-in', label_start_chips:'Jetons de départ',
     label_notes_optional:'Notes', sublabel_optional:'(optionnel)', placeholder_notes:'p.ex. straddle autorisé',
     label_session_pin:'PIN de cette session', sublabel_pin_digits:'(4 chiffres, au choix)',
-    err_need_date:'Veuillez choisir une date.', err_pin_format:'Le PIN doit contenir exactement 4 chiffres.', err_need_buyin_amount:'Veuillez indiquer un montant de buy-in supérieur à 0.', err_need_start_chips:'Veuillez indiquer des jetons de départ supérieurs à 0.', placeholder_amount:'Indiquer un montant', placeholder_chip_amount:'Nombre de jetons', btn_deal:'🤝 Deal', deal_modal_title:'Conclure un deal', deal_modal_hint:'Répartissez librement le prize pool restant entre les joueurs encore en lice.', label_remaining_pool:'Pool restant', err_deal_sum:'Les montants totalisent {sum} au lieu de {expected}.', btn_apply_deal:'Confirmer le deal', label_place:'Place', badge_deal:'Deal', net_label:'Net', hands_title:'Mains', hands_lede:'Gardez une trace des mains mémorables, session par session.', label_select_session:'Choisir une session', no_session_selected:'Choisissez une session ci-dessus pour enregistrer des mains.', panel_table_mode:'Mode table', label_hand_number:'Main #{n}', label_dealer:'Bouton', label_sb:'Small Blind', label_bb:'Big Blind', btn_record_hand:'Enregistrer la main', btn_skip_hand:'Passer la main', not_enough_players:'Au moins 2 joueurs actifs nécessaires pour le mode table.', panel_recent_hands:'Mains enregistrées', empty_no_hands_yet:'Aucune main enregistrée pour cette session.', record_hand_modal_title:'Enregistrer la main #{n}', label_winners:'Gagnant(s)', label_pot_size:'Taille du pot', label_story_optional:'Histoire', placeholder_story:'p.ex. Brelan de rois contre couleur à la river...', label_tags_optional:'Tags', tag_bad_beat:'Bad Beat', tag_cooler:'Cooler', tag_bluff:'Bluff', tag_hero_call:'Hero Call', tag_seven_deuce:'🐍 7-2 Game', skipped_tag:'Passée', hand_unknown:'Main inconnue', label_action_prompt:'Au tour de : {name}', label_pot_so_far:'Pot actuel', btn_cancel_hand:'Annuler la main', label_strict_mode:'Régler cette session via les mains', warning_strict_mode_text:'⚠️ Cette session est réglée sur la base des mains enregistrées. Chaque main doit être saisie entièrement et correctement — une main sautée ou incomplète fausse le résultat.', label_uncontested:'{name} gagne sans opposition', btn_save_hand:'Enregistrer la main', label_bet_amount:'Montant', btn_confirm_amount:'Confirmer', session_is_closed:'Cette session est déjà clôturée — plus aucune main ne peut être enregistrée.', label_allin_showdown:'🔥 All-in — les cartes restantes sont révélées automatiquement', label_show_holecards:'Montrer les cartes', label_hidden_cards:'cachées', btn_go_to_hands:'🂠 Enregistrer des mains pour cette session', btn_create_session:'Créer la session',
+    err_need_date:'Veuillez choisir une date.', err_pin_format:'Le PIN doit contenir exactement 4 chiffres.', err_need_buyin_amount:'Veuillez indiquer un montant de buy-in supérieur à 0.', err_need_start_chips:'Veuillez indiquer des jetons de départ supérieurs à 0.', placeholder_amount:'Indiquer un montant', placeholder_chip_amount:'Nombre de jetons', btn_deal:'🤝 Deal', deal_modal_title:'Conclure un deal', deal_modal_hint:'Répartissez librement le prize pool restant entre les joueurs encore en lice.', label_remaining_pool:'Pool restant', err_deal_sum:'Les montants totalisent {sum} au lieu de {expected}.', btn_apply_deal:'Confirmer le deal', label_place:'Place', badge_deal:'Deal', net_label:'Net', hands_title:'Poker Play', hands_lede:'Gardez une trace des mains mémorables, session par session.', label_select_session:'Choisir une session', no_session_selected:'Choisissez une session ci-dessus pour enregistrer des mains.', panel_table_mode:'Mode table', label_hand_number:'Main #{n}', label_dealer:'Bouton', label_sb:'Small Blind', label_bb:'Big Blind', btn_record_hand:'Enregistrer la main', btn_skip_hand:'Passer la main', not_enough_players:'Au moins 2 joueurs actifs nécessaires pour le mode table.', panel_recent_hands:'Mains enregistrées', empty_no_hands_yet:'Aucune main enregistrée pour cette session.', record_hand_modal_title:'Enregistrer la main #{n}', label_winners:'Gagnant(s)', label_pot_size:'Taille du pot', label_story_optional:'Histoire', placeholder_story:'p.ex. Brelan de rois contre couleur à la river...', label_tags_optional:'Tags', tag_bad_beat:'Bad Beat', tag_cooler:'Cooler', tag_bluff:'Bluff', tag_hero_call:'Hero Call', tag_seven_deuce:'🐍 7-2 Game', skipped_tag:'Passée', hand_unknown:'Main inconnue', label_action_prompt:'Au tour de : {name}', label_pot_so_far:'Pot actuel', btn_cancel_hand:'Annuler la main', label_strict_mode:'Régler cette session via les mains', warning_strict_mode_text:'⚠️ Cette session est réglée sur la base des mains enregistrées. Chaque main doit être saisie entièrement et correctement — une main sautée ou incomplète fausse le résultat.', label_uncontested:'{name} gagne sans opposition', btn_save_hand:'Enregistrer la main', label_bet_amount:'Montant', btn_confirm_amount:'Confirmer', session_is_closed:'Cette session est déjà clôturée — plus aucune main ne peut être enregistrée.', label_allin_showdown:'🔥 All-in — les cartes restantes sont révélées automatiquement', label_show_holecards:'Montrer les cartes', label_hidden_cards:'cachées', btn_go_to_hands:'🂠 Enregistrer des mains pour cette session', btn_create_session:'Créer la session',
     session_back:'← Retour aux sessions',
     unlocked_banner:'🔓 Déverrouillée sur cet appareil — votre PIN privé : {pin} (pour vous seulement, à ne pas partager)', btn_lock:'Verrouiller',
     locked_banner_text:'🔒 Cette session est verrouillée.', placeholder_pin:'PIN', btn_unlock:'Déverrouiller', btn_forgot_pin:'PIN oublié ?',
@@ -1928,7 +1930,7 @@ const translations = {
     err_need_names:'Veuillez indiquer prénom et nom.', btn_create_player:'Créer',
     edit_player_title:'Modifier le joueur', btn_save:'Enregistrer',
     placeholder_stats_title:'Stats', placeholder_stats_text:'Classement, évolution de l\'argent sur table et analyse Cash Game/Tournoi — à venir.',
-    placeholder_hands_title:'Mains', placeholder_hands_text:'Le mode main par main avec rotation Bouton/SB/BB et sélecteur de cartes — à venir.',
+    placeholder_hands_title:'Poker Play', placeholder_hands_text:'Le mode main par main avec rotation Bouton/SB/BB et sélecteur de cartes — à venir.',
     toast_need_chipcount:'Veuillez d\'abord saisir le nombre de jetons final (0 en cas de bust-out).',
     nav_settings:'Paramètres', nav_support:'Support', settings_title:'Paramètres', settings_lede:'Modèles de payout pour les tournois de {club}.',
     panel_payout_templates:'Structures de paiement tournoi', btn_new_template:'+ Nouveau modèle',
@@ -1958,13 +1960,13 @@ const translations = {
     modal_join_title:'Unisciti a un club', modal_join_hint:'Inserisci il codice a 5 caratteri del vostro gruppo.',
     label_club_code:'Codice club', placeholder_club_code:'es. K7QRM',
     err_need_code:'Inserisci un codice.', err_club_not_found:'Nessun club trovato con questo codice.', btn_join:'Unisciti',
-    nav_dashboard:'Dashboard', nav_sessions:'Sessioni', nav_players:'Giocatori', nav_stats:'Stats', nav_hands:'Mani', nav_club:'Club',
+    nav_dashboard:'Dashboard', nav_sessions:'Sessioni', nav_players:'Giocatori', nav_stats:'Stats', nav_hands:'Poker Play', nav_club:'Club',
     btn_switch_club:'Cambia club',
     dash_title:'Dashboard', dash_lede:'Panoramica di {club}.',
     stat_sessions_played:'Sessioni giocate', stat_biggest_pot:'Piatto più grande registrato', stat_avg_players:'Ø giocatori per sessione',
     panel_last_sessions:'Ultime sessioni', panel_last_hands:'Ultime mani', btn_view_all:'Vedi tutte',
     empty_no_sessions_title:'Nessuna sessione giocata finora.', empty_no_sessions_text:'Appena registrate la prima, apparirà qui.',
-    empty_no_hands_title:'Nessuna mano registrata.', empty_no_hands_text:'Le mani memorabili appariranno qui una volta registrate.',
+    empty_no_hands_title:'Poker Play', empty_no_hands_text:'Le mani memorabili appariranno qui una volta registrate.',
     sessions_title:'Sessioni', sessions_lede:'Tutte le partite di {club}.', btn_new_session:'+ Nuova sessione',
     filter_all:'Tutte', filter_open:'Aperte', filter_closed:'Concluse',
     badge_cash:'Cash Game', badge_tournament:'Torneo', badge_open:'Aperta', badge_closed:'Conclusa',
@@ -1976,7 +1978,7 @@ const translations = {
     label_buyin_amount:'Importo buy-in', label_start_chips:'Chip iniziali',
     label_notes_optional:'Note', sublabel_optional:'(opzionale)', placeholder_notes:'es. straddle permesso',
     label_session_pin:'PIN per questa sessione', sublabel_pin_digits:'(4 cifre, a scelta)',
-    err_need_date:'Seleziona una data.', err_pin_format:'Il PIN deve contenere esattamente 4 cifre.', err_need_buyin_amount:'Inserisci un importo buy-in maggiore di 0.', err_need_start_chips:'Inserisci chip iniziali maggiori di 0.', placeholder_amount:'Inserisci un importo', placeholder_chip_amount:'Numero di chip', btn_deal:'🤝 Deal', deal_modal_title:'Concludi un deal', deal_modal_hint:'Suddividi liberamente il montepremi rimanente tra i giocatori ancora in gioco.', label_remaining_pool:'Montepremi rimanente', err_deal_sum:'Gli importi totalizzano {sum} invece di {expected}.', btn_apply_deal:'Conferma deal', label_place:'Posto', badge_deal:'Deal', net_label:'Netto', hands_title:'Mani', hands_lede:'Registra le mani memorabili, sessione per sessione.', label_select_session:'Seleziona sessione', no_session_selected:'Seleziona una sessione sopra per registrare le mani.', panel_table_mode:'Modalità tavolo', label_hand_number:'Mano #{n}', label_dealer:'Bottone', label_sb:'Small Blind', label_bb:'Big Blind', btn_record_hand:'Registra mano', btn_skip_hand:'Salta mano', not_enough_players:'Servono almeno 2 giocatori attivi per la modalità tavolo.', panel_recent_hands:'Mani registrate', empty_no_hands_yet:'Nessuna mano registrata in questa sessione.', record_hand_modal_title:'Registra mano #{n}', label_winners:'Vincitore/i', label_pot_size:'Dimensione del piatto', label_story_optional:'Storia', placeholder_story:'es. Tris di re contro colore al river...', label_tags_optional:'Tag', tag_bad_beat:'Bad Beat', tag_cooler:'Cooler', tag_bluff:'Bluff', tag_hero_call:'Hero Call', tag_seven_deuce:'🐍 7-2 Game', skipped_tag:'Saltata', hand_unknown:'Mano sconosciuta', label_action_prompt:'Tocca a: {name}', label_pot_so_far:'Piatto finora', btn_cancel_hand:'Annulla mano', label_strict_mode:'Regola questa sessione tramite le mani', warning_strict_mode_text:'⚠️ Questa sessione viene regolata in base alle mani registrate. Ogni mano deve essere inserita completamente e correttamente — una mano saltata o incompleta falsa il risultato.', label_uncontested:'{name} vince senza contestazione', btn_save_hand:'Salva mano', label_bet_amount:'Importo', btn_confirm_amount:'Conferma', session_is_closed:'Questa sessione è già stata chiusa — non è più possibile registrare mani.', label_allin_showdown:'🔥 All-in — le carte restanti vengono rivelate automaticamente', label_show_holecards:'Mostra le carte', label_hidden_cards:'coperte', btn_go_to_hands:'🂠 Registra mani per questa sessione', btn_create_session:'Crea sessione',
+    err_need_date:'Seleziona una data.', err_pin_format:'Il PIN deve contenere esattamente 4 cifre.', err_need_buyin_amount:'Inserisci un importo buy-in maggiore di 0.', err_need_start_chips:'Inserisci chip iniziali maggiori di 0.', placeholder_amount:'Inserisci un importo', placeholder_chip_amount:'Numero di chip', btn_deal:'🤝 Deal', deal_modal_title:'Concludi un deal', deal_modal_hint:'Suddividi liberamente il montepremi rimanente tra i giocatori ancora in gioco.', label_remaining_pool:'Montepremi rimanente', err_deal_sum:'Gli importi totalizzano {sum} invece di {expected}.', btn_apply_deal:'Conferma deal', label_place:'Posto', badge_deal:'Deal', net_label:'Netto', hands_title:'Poker Play', hands_lede:'Registra le mani memorabili, sessione per sessione.', label_select_session:'Seleziona sessione', no_session_selected:'Seleziona una sessione sopra per registrare le mani.', panel_table_mode:'Modalità tavolo', label_hand_number:'Mano #{n}', label_dealer:'Bottone', label_sb:'Small Blind', label_bb:'Big Blind', btn_record_hand:'Registra mano', btn_skip_hand:'Salta mano', not_enough_players:'Servono almeno 2 giocatori attivi per la modalità tavolo.', panel_recent_hands:'Mani registrate', empty_no_hands_yet:'Nessuna mano registrata in questa sessione.', record_hand_modal_title:'Registra mano #{n}', label_winners:'Vincitore/i', label_pot_size:'Dimensione del piatto', label_story_optional:'Storia', placeholder_story:'es. Tris di re contro colore al river...', label_tags_optional:'Tag', tag_bad_beat:'Bad Beat', tag_cooler:'Cooler', tag_bluff:'Bluff', tag_hero_call:'Hero Call', tag_seven_deuce:'🐍 7-2 Game', skipped_tag:'Saltata', hand_unknown:'Mano sconosciuta', label_action_prompt:'Tocca a: {name}', label_pot_so_far:'Piatto finora', btn_cancel_hand:'Annulla mano', label_strict_mode:'Regola questa sessione tramite le mani', warning_strict_mode_text:'⚠️ Questa sessione viene regolata in base alle mani registrate. Ogni mano deve essere inserita completamente e correttamente — una mano saltata o incompleta falsa il risultato.', label_uncontested:'{name} vince senza contestazione', btn_save_hand:'Salva mano', label_bet_amount:'Importo', btn_confirm_amount:'Conferma', session_is_closed:'Questa sessione è già stata chiusa — non è più possibile registrare mani.', label_allin_showdown:'🔥 All-in — le carte restanti vengono rivelate automaticamente', label_show_holecards:'Mostra le carte', label_hidden_cards:'coperte', btn_go_to_hands:'🂠 Registra mani per questa sessione', btn_create_session:'Crea sessione',
     session_back:'← Torna alle sessioni',
     unlocked_banner:'🔓 Sbloccata su questo dispositivo — il tuo PIN privato: {pin} (solo per te, non condividerlo)', btn_lock:'Blocca',
     locked_banner_text:'🔒 Questa sessione è bloccata.', placeholder_pin:'PIN', btn_unlock:'Sblocca', btn_forgot_pin:'PIN dimenticato?',
@@ -2004,7 +2006,7 @@ const translations = {
     err_need_names:'Inserisci nome e cognome.', btn_create_player:'Crea',
     edit_player_title:'Modifica giocatore', btn_save:'Salva',
     placeholder_stats_title:'Stats', placeholder_stats_text:'Classifica, andamento del denaro sul tavolo e analisi Cash Game/Torneo — in arrivo.',
-    placeholder_hands_title:'Mani', placeholder_hands_text:'La modalità mano per mano con rotazione Bottone/SB/BB e selettore carte — in arrivo.',
+    placeholder_hands_title:'Poker Play', placeholder_hands_text:'La modalità mano per mano con rotazione Bottone/SB/BB e selettore carte — in arrivo.',
     toast_need_chipcount:'Inserisci prima il conteggio chip finale (anche 0 in caso di bust-out).',
     nav_settings:'Impostazioni', nav_support:'Supporto', settings_title:'Impostazioni', settings_lede:'Modelli di payout per i tornei di {club}.',
     panel_payout_templates:'Strutture di payout torneo', btn_new_template:'+ Nuovo modello',
@@ -2034,13 +2036,13 @@ const translations = {
     modal_join_title:'Join a club', modal_join_hint:'Enter your group\'s 5-character code.',
     label_club_code:'Club code', placeholder_club_code:'e.g. K7QRM',
     err_need_code:'Please enter a code.', err_club_not_found:'No club found with this code.', btn_join:'Join',
-    nav_dashboard:'Dashboard', nav_sessions:'Sessions', nav_players:'Players', nav_stats:'Stats', nav_hands:'Hands', nav_club:'Club',
+    nav_dashboard:'Dashboard', nav_sessions:'Sessions', nav_players:'Players', nav_stats:'Stats', nav_hands:'Poker Play', nav_club:'Club',
     btn_switch_club:'Switch club',
     dash_title:'Dashboard', dash_lede:'Overview of {club}.',
     stat_sessions_played:'Sessions played', stat_biggest_pot:'Biggest recorded pot', stat_avg_players:'Avg. players per session',
     panel_last_sessions:'Latest sessions', panel_last_hands:'Latest hands', btn_view_all:'View all',
     empty_no_sessions_title:'No sessions played yet.', empty_no_sessions_text:'Once you log your first game, it will show up here.',
-    empty_no_hands_title:'No hand recorded yet.', empty_no_hands_text:'Memorable hands will show up here once you record them.',
+    empty_no_hands_title:'Poker Play', empty_no_hands_text:'Memorable hands will show up here once you record them.',
     sessions_title:'Sessions', sessions_lede:'All games of {club}.', btn_new_session:'+ New session',
     filter_all:'All', filter_open:'Open', filter_closed:'Closed',
     badge_cash:'Cash Game', badge_tournament:'Tournament', badge_open:'Open', badge_closed:'Closed',
@@ -2052,7 +2054,7 @@ const translations = {
     label_buyin_amount:'Buy-in amount', label_start_chips:'Starting chips',
     label_notes_optional:'Notes', sublabel_optional:'(optional)', placeholder_notes:'e.g. straddle allowed',
     label_session_pin:'PIN for this session', sublabel_pin_digits:'(4 digits, your choice)',
-    err_need_date:'Please choose a date.', err_pin_format:'PIN must be exactly 4 digits.', err_need_buyin_amount:'Please enter a buy-in amount greater than 0.', err_need_start_chips:'Please enter starting chips greater than 0.', placeholder_amount:'Enter an amount', placeholder_chip_amount:'Number of chips', btn_deal:'🤝 Deal', deal_modal_title:'Make a deal', deal_modal_hint:'Freely split the remaining prize pool among the players still in.', label_remaining_pool:'Remaining pool', err_deal_sum:'The amounts add up to {sum} instead of {expected}.', btn_apply_deal:'Confirm deal', label_place:'Place', badge_deal:'Deal', net_label:'Net', hands_title:'Hands', hands_lede:'Record memorable hands, session by session.', label_select_session:'Select session', no_session_selected:'Select a session above to record hands.', panel_table_mode:'Table mode', label_hand_number:'Hand #{n}', label_dealer:'Button', label_sb:'Small Blind', label_bb:'Big Blind', btn_record_hand:'Record hand', btn_skip_hand:'Skip hand', not_enough_players:'At least 2 active players needed for table mode.', panel_recent_hands:'Recorded hands', empty_no_hands_yet:'No hand recorded in this session yet.', record_hand_modal_title:'Record hand #{n}', label_winners:'Winner(s)', label_pot_size:'Pot size', label_story_optional:'Story', placeholder_story:'e.g. Set of kings vs river flush...', label_tags_optional:'Tags', tag_bad_beat:'Bad Beat', tag_cooler:'Cooler', tag_bluff:'Bluff', tag_hero_call:'Hero Call', tag_seven_deuce:'🐍 7-2 Game', skipped_tag:'Skipped', hand_unknown:'Unknown hand', label_action_prompt:'Action on: {name}', label_pot_so_far:'Pot so far', btn_cancel_hand:'Cancel hand', label_strict_mode:'Settle this session via hands', warning_strict_mode_text:'⚠️ This session is settled based on the recorded hands. Every hand must be entered fully and correctly — a skipped or incomplete hand will distort the result.', label_uncontested:'{name} wins uncontested', btn_save_hand:'Save hand', label_bet_amount:'Amount', btn_confirm_amount:'Confirm', session_is_closed:'This session is already closed — no more hands can be recorded.', label_allin_showdown:'🔥 All-in — remaining cards are revealed automatically', label_show_holecards:'Show hole cards', label_hidden_cards:'hidden', btn_go_to_hands:'🂠 Record hands for this session', btn_create_session:'Create session',
+    err_need_date:'Please choose a date.', err_pin_format:'PIN must be exactly 4 digits.', err_need_buyin_amount:'Please enter a buy-in amount greater than 0.', err_need_start_chips:'Please enter starting chips greater than 0.', placeholder_amount:'Enter an amount', placeholder_chip_amount:'Number of chips', btn_deal:'🤝 Deal', deal_modal_title:'Make a deal', deal_modal_hint:'Freely split the remaining prize pool among the players still in.', label_remaining_pool:'Remaining pool', err_deal_sum:'The amounts add up to {sum} instead of {expected}.', btn_apply_deal:'Confirm deal', label_place:'Place', badge_deal:'Deal', net_label:'Net', hands_title:'Poker Play', hands_lede:'Record memorable hands, session by session.', label_select_session:'Select session', no_session_selected:'Select a session above to record hands.', panel_table_mode:'Table mode', label_hand_number:'Hand #{n}', label_dealer:'Button', label_sb:'Small Blind', label_bb:'Big Blind', btn_record_hand:'Record hand', btn_skip_hand:'Skip hand', not_enough_players:'At least 2 active players needed for table mode.', panel_recent_hands:'Recorded hands', empty_no_hands_yet:'No hand recorded in this session yet.', record_hand_modal_title:'Record hand #{n}', label_winners:'Winner(s)', label_pot_size:'Pot size', label_story_optional:'Story', placeholder_story:'e.g. Set of kings vs river flush...', label_tags_optional:'Tags', tag_bad_beat:'Bad Beat', tag_cooler:'Cooler', tag_bluff:'Bluff', tag_hero_call:'Hero Call', tag_seven_deuce:'🐍 7-2 Game', skipped_tag:'Skipped', hand_unknown:'Unknown hand', label_action_prompt:'Action on: {name}', label_pot_so_far:'Pot so far', btn_cancel_hand:'Cancel hand', label_strict_mode:'Settle this session via hands', warning_strict_mode_text:'⚠️ This session is settled based on the recorded hands. Every hand must be entered fully and correctly — a skipped or incomplete hand will distort the result.', label_uncontested:'{name} wins uncontested', btn_save_hand:'Save hand', label_bet_amount:'Amount', btn_confirm_amount:'Confirm', session_is_closed:'This session is already closed — no more hands can be recorded.', label_allin_showdown:'🔥 All-in — remaining cards are revealed automatically', label_show_holecards:'Show hole cards', label_hidden_cards:'hidden', btn_go_to_hands:'🂠 Record hands for this session', btn_create_session:'Create session',
     session_back:'← Back to sessions',
     unlocked_banner:'🔓 Unlocked on this device — your private PIN: {pin} (for you only, don\'t share it)', btn_lock:'Lock',
     locked_banner_text:'🔒 This session is locked.', placeholder_pin:'PIN', btn_unlock:'Unlock', btn_forgot_pin:'Forgot PIN?',
@@ -2080,7 +2082,7 @@ const translations = {
     err_need_names:'Please enter first and last name.', btn_create_player:'Create',
     edit_player_title:'Edit player', btn_save:'Save',
     placeholder_stats_title:'Stats', placeholder_stats_text:'Leaderboard, money-on-table trend and Cash Game/Tournament breakdown — coming next.',
-    placeholder_hands_title:'Hands', placeholder_hands_text:'The hand-by-hand mode with Button/SB/BB rotation and card picker — coming after that.',
+    placeholder_hands_title:'Poker Play', placeholder_hands_text:'The hand-by-hand mode with Button/SB/BB rotation and card picker — coming after that.',
     toast_need_chipcount:'Please enter the final chip count first (0 if busted out).',
     nav_settings:'Settings', nav_support:'Support', settings_title:'Settings', settings_lede:'Payout templates for tournaments of {club}.',
     panel_payout_templates:'Tournament Payout Structures', btn_new_template:'+ New template',
@@ -2110,13 +2112,13 @@ const translations = {
     modal_join_title:'Unirse a un club', modal_join_hint:'Introduce el código de 5 caracteres de tu grupo.',
     label_club_code:'Código del club', placeholder_club_code:'p.ej. K7QRM',
     err_need_code:'Por favor, introduce un código.', err_club_not_found:'No se encontró ningún club con ese código.', btn_join:'Unirse',
-    nav_dashboard:'Panel', nav_sessions:'Sesiones', nav_players:'Jugadores', nav_stats:'Stats', nav_hands:'Manos', nav_club:'Club',
+    nav_dashboard:'Panel', nav_sessions:'Sesiones', nav_players:'Jugadores', nav_stats:'Stats', nav_hands:'Poker Play', nav_club:'Club',
     btn_switch_club:'Cambiar de club',
     dash_title:'Panel', dash_lede:'Resumen de {club}.',
     stat_sessions_played:'Sesiones jugadas', stat_biggest_pot:'Bote más grande registrado', stat_avg_players:'Ø jugadores por sesión',
     panel_last_sessions:'Últimas sesiones', panel_last_hands:'Últimas manos', btn_view_all:'Ver todas',
     empty_no_sessions_title:'Todavía no se ha jugado ninguna sesión.', empty_no_sessions_text:'En cuanto registréis la primera, aparecerá aquí.',
-    empty_no_hands_title:'Todavía no hay ninguna mano registrada.', empty_no_hands_text:'Las manos memorables aparecerán aquí en cuanto las registréis.',
+    empty_no_hands_title:'Poker Play', empty_no_hands_text:'Las manos memorables aparecerán aquí en cuanto las registréis.',
     sessions_title:'Sesiones', sessions_lede:'Todas las partidas de {club}.', btn_new_session:'+ Nueva sesión',
     filter_all:'Todas', filter_open:'Abiertas', filter_closed:'Cerradas',
     badge_cash:'Cash Game', badge_tournament:'Torneo', badge_open:'Abierta', badge_closed:'Cerrada',
@@ -2128,7 +2130,7 @@ const translations = {
     label_buyin_amount:'Importe del buy-in', label_start_chips:'Fichas iniciales',
     label_notes_optional:'Notas', sublabel_optional:'(opcional)', placeholder_notes:'p.ej. straddle permitido',
     label_session_pin:'PIN de esta sesión', sublabel_pin_digits:'(4 dígitos, a elegir)',
-    err_need_date:'Por favor, elige una fecha.', err_pin_format:'El PIN debe tener exactamente 4 dígitos.', err_need_buyin_amount:'Introduce un importe de buy-in mayor que 0.', err_need_start_chips:'Introduce fichas iniciales mayores que 0.', placeholder_amount:'Introduce un importe', placeholder_chip_amount:'Número de fichas', btn_deal:'🤝 Deal', deal_modal_title:'Hacer un deal', deal_modal_hint:'Reparte libremente el prize pool restante entre los jugadores que siguen en juego.', label_remaining_pool:'Pool restante', err_deal_sum:'Los importes suman {sum} en lugar de {expected}.', btn_apply_deal:'Confirmar deal', label_place:'Puesto', badge_deal:'Deal', net_label:'Neto', hands_title:'Manos', hands_lede:'Guarda las manos memorables, sesión a sesión.', label_select_session:'Seleccionar sesión', no_session_selected:'Selecciona una sesión arriba para registrar manos.', panel_table_mode:'Modo mesa', label_hand_number:'Mano #{n}', label_dealer:'Botón', label_sb:'Small Blind', label_bb:'Big Blind', btn_record_hand:'Registrar mano', btn_skip_hand:'Saltar mano', not_enough_players:'Se necesitan al menos 2 jugadores activos para el modo mesa.', panel_recent_hands:'Manos registradas', empty_no_hands_yet:'Todavía no hay ninguna mano registrada en esta sesión.', record_hand_modal_title:'Registrar mano #{n}', label_winners:'Ganador(es)', label_pot_size:'Tamaño del bote', label_story_optional:'Historia', placeholder_story:'p.ej. Trío de reyes contra color en el river...', label_tags_optional:'Tags', tag_bad_beat:'Bad Beat', tag_cooler:'Cooler', tag_bluff:'Bluff', tag_hero_call:'Hero Call', tag_seven_deuce:'🐍 7-2 Game', skipped_tag:'Saltada', hand_unknown:'Mano desconocida', label_action_prompt:'Turno de: {name}', label_pot_so_far:'Bote hasta ahora', btn_cancel_hand:'Cancelar mano', label_strict_mode:'Liquidar esta sesión mediante las manos', warning_strict_mode_text:'⚠️ Esta sesión se liquida en base a las manos registradas. Cada mano debe registrarse completa y correctamente — una mano saltada o incompleta falseará el resultado.', label_uncontested:'{name} gana sin oposición', btn_save_hand:'Guardar mano', label_bet_amount:'Importe', btn_confirm_amount:'Confirmar', session_is_closed:'Esta sessão já está encerrada — não é possível registar mais mãos.', label_allin_showdown:'🔥 All-in — as restantes cartas são reveladas automaticamente', label_show_holecards:'Mostrar cartas', label_hidden_cards:'ocultas', btn_go_to_hands:'🂠 Registar mãos para esta sessão', session_is_closed:'Esta sesión ya está cerrada — no se pueden registrar más manos.', label_allin_showdown:'🔥 All-in — las cartas restantes se revelan automáticamente', label_show_holecards:'Mostrar cartas', label_hidden_cards:'ocultas', btn_go_to_hands:'🂠 Registrar manos para esta sesión', btn_create_session:'Crear sesión',
+    err_need_date:'Por favor, elige una fecha.', err_pin_format:'El PIN debe tener exactamente 4 dígitos.', err_need_buyin_amount:'Introduce un importe de buy-in mayor que 0.', err_need_start_chips:'Introduce fichas iniciales mayores que 0.', placeholder_amount:'Introduce un importe', placeholder_chip_amount:'Número de fichas', btn_deal:'🤝 Deal', deal_modal_title:'Hacer un deal', deal_modal_hint:'Reparte libremente el prize pool restante entre los jugadores que siguen en juego.', label_remaining_pool:'Pool restante', err_deal_sum:'Los importes suman {sum} en lugar de {expected}.', btn_apply_deal:'Confirmar deal', label_place:'Puesto', badge_deal:'Deal', net_label:'Neto', hands_title:'Poker Play', hands_lede:'Guarda las manos memorables, sesión a sesión.', label_select_session:'Seleccionar sesión', no_session_selected:'Selecciona una sesión arriba para registrar manos.', panel_table_mode:'Modo mesa', label_hand_number:'Mano #{n}', label_dealer:'Botón', label_sb:'Small Blind', label_bb:'Big Blind', btn_record_hand:'Registrar mano', btn_skip_hand:'Saltar mano', not_enough_players:'Se necesitan al menos 2 jugadores activos para el modo mesa.', panel_recent_hands:'Manos registradas', empty_no_hands_yet:'Todavía no hay ninguna mano registrada en esta sesión.', record_hand_modal_title:'Registrar mano #{n}', label_winners:'Ganador(es)', label_pot_size:'Tamaño del bote', label_story_optional:'Historia', placeholder_story:'p.ej. Trío de reyes contra color en el river...', label_tags_optional:'Tags', tag_bad_beat:'Bad Beat', tag_cooler:'Cooler', tag_bluff:'Bluff', tag_hero_call:'Hero Call', tag_seven_deuce:'🐍 7-2 Game', skipped_tag:'Saltada', hand_unknown:'Mano desconocida', label_action_prompt:'Turno de: {name}', label_pot_so_far:'Bote hasta ahora', btn_cancel_hand:'Cancelar mano', label_strict_mode:'Liquidar esta sesión mediante las manos', warning_strict_mode_text:'⚠️ Esta sesión se liquida en base a las manos registradas. Cada mano debe registrarse completa y correctamente — una mano saltada o incompleta falseará el resultado.', label_uncontested:'{name} gana sin oposición', btn_save_hand:'Guardar mano', label_bet_amount:'Importe', btn_confirm_amount:'Confirmar', session_is_closed:'Esta sessão já está encerrada — não é possível registar mais mãos.', label_allin_showdown:'🔥 All-in — as restantes cartas são reveladas automaticamente', label_show_holecards:'Mostrar cartas', label_hidden_cards:'ocultas', btn_go_to_hands:'🂠 Registar mãos para esta sessão', session_is_closed:'Esta sesión ya está cerrada — no se pueden registrar más manos.', label_allin_showdown:'🔥 All-in — las cartas restantes se revelan automáticamente', label_show_holecards:'Mostrar cartas', label_hidden_cards:'ocultas', btn_go_to_hands:'🂠 Registrar manos para esta sesión', btn_create_session:'Crear sesión',
     session_back:'← Volver a sesiones',
     unlocked_banner:'🔓 Desbloqueada en este dispositivo — tu PIN privado: {pin} (solo para ti, no lo compartas)', btn_lock:'Bloquear',
     locked_banner_text:'🔒 Esta sesión está bloqueada.', placeholder_pin:'PIN', btn_unlock:'Desbloquear', btn_forgot_pin:'¿Olvidaste el PIN?',
@@ -2156,7 +2158,7 @@ const translations = {
     err_need_names:'Por favor, introduce nombre y apellido.', btn_create_player:'Crear',
     edit_player_title:'Editar jugador', btn_save:'Guardar',
     placeholder_stats_title:'Stats', placeholder_stats_text:'Clasificación, evolución del dinero en mesa y análisis Cash Game/Torneo — próximamente.',
-    placeholder_hands_title:'Manos', placeholder_hands_text:'El modo mano a mano con rotación Botón/SB/BB y selector de cartas — próximamente.',
+    placeholder_hands_title:'Poker Play', placeholder_hands_text:'El modo mano a mano con rotación Botón/SB/BB y selector de cartas — próximamente.',
     toast_need_chipcount:'Por favor, introduce primero el recuento final de fichas (0 si se quedó sin fichas).',
     nav_settings:'Ajustes', settings_title:'Ajustes', settings_lede:'Plantillas de payout para torneos de {club}.',
     panel_payout_templates:'Estructuras de pago de torneo', btn_new_template:'+ Nueva plantilla',
@@ -2186,13 +2188,13 @@ const translations = {
     modal_join_title:'Juntar-se a um clube', modal_join_hint:'Insira o código de 5 caracteres do vosso grupo.',
     label_club_code:'Código do clube', placeholder_club_code:'ex. K7QRM',
     err_need_code:'Por favor, insira um código.', err_club_not_found:'Nenhum clube encontrado com este código.', btn_join:'Entrar',
-    nav_dashboard:'Painel', nav_sessions:'Sessões', nav_players:'Jogadores', nav_stats:'Stats', nav_hands:'Mãos', nav_club:'Clube',
+    nav_dashboard:'Painel', nav_sessions:'Sessões', nav_players:'Jogadores', nav_stats:'Stats', nav_hands:'Poker Play', nav_club:'Clube',
     btn_switch_club:'Trocar de clube',
     dash_title:'Painel', dash_lede:'Visão geral de {club}.',
     stat_sessions_played:'Sessões jogadas', stat_biggest_pot:'Maior pote registado', stat_avg_players:'Ø jogadores por sessão',
     panel_last_sessions:'Últimas sessões', panel_last_hands:'Últimas mãos', btn_view_all:'Ver todas',
     empty_no_sessions_title:'Ainda nenhuma sessão jogada.', empty_no_sessions_text:'Assim que registarem a primeira, ela aparece aqui.',
-    empty_no_hands_title:'Ainda nenhuma mão registada.', empty_no_hands_text:'Mãos memoráveis aparecem aqui assim que forem registadas.',
+    empty_no_hands_title:'Poker Play', empty_no_hands_text:'Mãos memoráveis aparecem aqui assim que forem registadas.',
     sessions_title:'Sessões', sessions_lede:'Todas as partidas de {club}.', btn_new_session:'+ Nova sessão',
     filter_all:'Todas', filter_open:'Abertas', filter_closed:'Encerradas',
     badge_cash:'Cash Game', badge_tournament:'Torneio', badge_open:'Aberta', badge_closed:'Encerrada',
@@ -2204,7 +2206,7 @@ const translations = {
     label_buyin_amount:'Valor do buy-in', label_start_chips:'Fichas iniciais',
     label_notes_optional:'Notas', sublabel_optional:'(opcional)', placeholder_notes:'ex. straddle permitido',
     label_session_pin:'PIN desta sessão', sublabel_pin_digits:'(4 dígitos, à escolha)',
-    err_need_date:'Por favor, escolha uma data.', err_pin_format:'O PIN deve ter exatamente 4 dígitos.', err_need_buyin_amount:'Insira um valor de buy-in maior que 0.', err_need_start_chips:'Insira fichas iniciais maiores que 0.', placeholder_amount:'Insira um valor', placeholder_chip_amount:'Número de fichas', btn_deal:'🤝 Deal', deal_modal_title:'Fazer um deal', deal_modal_hint:'Reparte livremente o prize pool restante entre os jogadores ainda em jogo.', label_remaining_pool:'Pool restante', err_deal_sum:'Os valores somam {sum} em vez de {expected}.', btn_apply_deal:'Confirmar deal', label_place:'Lugar', badge_deal:'Deal', net_label:'Líquido', hands_title:'Mãos', hands_lede:'Regista as mãos memoráveis, sessão a sessão.', label_select_session:'Selecionar sessão', no_session_selected:'Seleciona uma sessão acima para registar mãos.', panel_table_mode:'Modo mesa', label_hand_number:'Mão #{n}', label_dealer:'Botão', label_sb:'Small Blind', label_bb:'Big Blind', btn_record_hand:'Registar mão', btn_skip_hand:'Saltar mão', not_enough_players:'São necessários pelo menos 2 jogadores ativos para o modo mesa.', panel_recent_hands:'Mãos registadas', empty_no_hands_yet:'Ainda nenhuma mão registada nesta sessão.', record_hand_modal_title:'Registar mão #{n}', label_winners:'Vencedor(es)', label_pot_size:'Tamanho do pote', label_story_optional:'História', placeholder_story:'ex. Trinca de reis contra flush no river...', label_tags_optional:'Tags', tag_bad_beat:'Bad Beat', tag_cooler:'Cooler', tag_bluff:'Bluff', tag_hero_call:'Hero Call', tag_seven_deuce:'🐍 7-2 Game', skipped_tag:'Saltada', hand_unknown:'Mão desconhecida', label_action_prompt:'Vez de: {name}', label_pot_so_far:'Pote até agora', btn_cancel_hand:'Cancelar mão', label_strict_mode:'Liquidar esta sessão através das mãos', warning_strict_mode_text:'⚠️ Esta sessão é liquidada com base nas mãos registadas. Cada mão deve ser registada de forma completa e correta — uma mão saltada ou incompleta vai distorcer o resultado.', label_uncontested:'{name} ganha sem oposição', btn_save_hand:'Guardar mão', label_bet_amount:'Valor', btn_confirm_amount:'Confirmar', btn_create_session:'Criar sessão',
+    err_need_date:'Por favor, escolha uma data.', err_pin_format:'O PIN deve ter exatamente 4 dígitos.', err_need_buyin_amount:'Insira um valor de buy-in maior que 0.', err_need_start_chips:'Insira fichas iniciais maiores que 0.', placeholder_amount:'Insira um valor', placeholder_chip_amount:'Número de fichas', btn_deal:'🤝 Deal', deal_modal_title:'Fazer um deal', deal_modal_hint:'Reparte livremente o prize pool restante entre os jogadores ainda em jogo.', label_remaining_pool:'Pool restante', err_deal_sum:'Os valores somam {sum} em vez de {expected}.', btn_apply_deal:'Confirmar deal', label_place:'Lugar', badge_deal:'Deal', net_label:'Líquido', hands_title:'Poker Play', hands_lede:'Regista as mãos memoráveis, sessão a sessão.', label_select_session:'Selecionar sessão', no_session_selected:'Seleciona uma sessão acima para registar mãos.', panel_table_mode:'Modo mesa', label_hand_number:'Mão #{n}', label_dealer:'Botão', label_sb:'Small Blind', label_bb:'Big Blind', btn_record_hand:'Registar mão', btn_skip_hand:'Saltar mão', not_enough_players:'São necessários pelo menos 2 jogadores ativos para o modo mesa.', panel_recent_hands:'Mãos registadas', empty_no_hands_yet:'Ainda nenhuma mão registada nesta sessão.', record_hand_modal_title:'Registar mão #{n}', label_winners:'Vencedor(es)', label_pot_size:'Tamanho do pote', label_story_optional:'História', placeholder_story:'ex. Trinca de reis contra flush no river...', label_tags_optional:'Tags', tag_bad_beat:'Bad Beat', tag_cooler:'Cooler', tag_bluff:'Bluff', tag_hero_call:'Hero Call', tag_seven_deuce:'🐍 7-2 Game', skipped_tag:'Saltada', hand_unknown:'Mão desconhecida', label_action_prompt:'Vez de: {name}', label_pot_so_far:'Pote até agora', btn_cancel_hand:'Cancelar mão', label_strict_mode:'Liquidar esta sessão através das mãos', warning_strict_mode_text:'⚠️ Esta sessão é liquidada com base nas mãos registadas. Cada mão deve ser registada de forma completa e correta — uma mão saltada ou incompleta vai distorcer o resultado.', label_uncontested:'{name} ganha sem oposição', btn_save_hand:'Guardar mão', label_bet_amount:'Valor', btn_confirm_amount:'Confirmar', btn_create_session:'Criar sessão',
     session_back:'← Voltar às sessões',
     unlocked_banner:'🔓 Desbloqueada neste dispositivo — o teu PIN privado: {pin} (só para ti, não partilhes)', btn_lock:'Bloquear',
     locked_banner_text:'🔒 Esta sessão está bloqueada.', placeholder_pin:'PIN', btn_unlock:'Desbloquear', btn_forgot_pin:'Esqueceu o PIN?',
@@ -2232,7 +2234,7 @@ const translations = {
     err_need_names:'Por favor, insira nome próprio e apelido.', btn_create_player:'Criar',
     edit_player_title:'Editar jogador', btn_save:'Guardar',
     placeholder_stats_title:'Stats', placeholder_stats_text:'Classificação, evolução do dinheiro em jogo e análise Cash Game/Torneio — em breve.',
-    placeholder_hands_title:'Mãos', placeholder_hands_text:'O modo mão a mão com rotação Botão/SB/BB e seletor de cartas — em breve.',
+    placeholder_hands_title:'Poker Play', placeholder_hands_text:'O modo mão a mão com rotação Botão/SB/BB e seletor de cartas — em breve.',
     toast_need_chipcount:'Por favor, insira primeiro a contagem final de fichas (0 em caso de eliminação).',
     nav_settings:'Definições', settings_title:'Definições', settings_lede:'Modelos de payout para torneios de {club}.',
     panel_payout_templates:'Estruturas de pagamento de torneio', btn_new_template:'+ Novo modelo',
@@ -2753,7 +2755,7 @@ document.getElementById('nav').addEventListener('click', (e) => {
   setView(btn.dataset.view);
 });
 function setView(view){
-  if(currentView === 'online' && view !== 'online') cleanupOnlineChannels();
+  if(view !== currentView){ if(currentView === 'hands') resetOnlineTableState(); else if(currentView === 'online') cleanupOnlineChannels(); }
   currentView = view;
   document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   render();
@@ -2768,7 +2770,7 @@ const NAV_ITEMS_DEF = {
   settings: { glyph:'⚙', labelKey:'nav_settings' },
   support: { glyph:'🆘', labelKey:'nav_support' }
 };
-const NAV_DEFAULT_ORDER = ['dashboard','sessions','players','hands','online','club','settings','support'];
+const NAV_DEFAULT_ORDER = ['dashboard','sessions','players','hands','club','settings','support'];
 let navArrangeMode = false;
 function getNavOrder(){
   const saved = panelOrders['__nav__'];
@@ -4565,13 +4567,11 @@ function renderOnlineSessionDetail(s){
     </div>` : ''}
   `;
 }
-async function openOnlineSessionTable(sessionId){
-  const s = getSession ? getSession(sessionId) : currentClub.sessions.find(x => x.id === sessionId);
-  if(!s || !s.onlineTableId) return;
-  await loadOnlineTables();
+function openOnlineSessionTable(sessionId){
+  handsSelectedSessionId = sessionId;
   currentSessionId = null;
-  setView('online');
-  await openOnlineTable(s.onlineTableId);
+  activeTabs['hands'] = 'liveTable';
+  setView('hands');
 }
 async function closeOnlineSessionFromDetail(sessionId){
   const s = currentClub.sessions.find(x => x.id === sessionId);
@@ -7672,7 +7672,11 @@ function tagLabel(tag){ return HAND_TAGS.includes(tag) ? t(tag) : tag; }
 function renderHands(){
   const sessions = [...currentClub.sessions].sort((a,b) => new Date(b.date) - new Date(a.date));
   if(handsSelectedSessionId && !sessions.find(s => s.id === handsSelectedSessionId)) handsSelectedSessionId = null;
-  if(!handsSelectedSessionId && sessions.length) handsSelectedSessionId = sessions[0].id;
+  if(!handsSelectedSessionId && sessions.length){
+    // Standard: laufende Online-Session zuerst (damit Mitspieler direkt am Tisch landen), sonst die neueste Session
+    const runningOnline = sessions.find(x => x.mode === 'online' && x.status === 'open');
+    handsSelectedSessionId = (runningOnline || sessions[0]).id;
+  }
   const s = handsSelectedSessionId ? getSession(handsSelectedSessionId) : null;
 
   // Die Session-Auswahl + Entsperren-Leiste betrifft nur den Live-Tisch (dort braucht es eine konkrete,
@@ -7685,17 +7689,17 @@ function renderHands(){
     <div class="panel" style="margin-bottom:16px;padding:12px 16px;">
       <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
         <div class="field" style="margin-bottom:0;flex:1;min-width:220px;">
-          <select onchange="handsSelectedSessionId=this.value; render();" style="font-size:13px;">
-            ${sessions.map(sess => `<option value="${sess.id}" ${sess.id===handsSelectedSessionId?'selected':''}>${new Date(sess.date).toLocaleDateString(locale(),{day:'2-digit',month:'2-digit',year:'numeric'})}${sess.venue?' · 📍 '+escapeHtml(sess.venue):(sess.location?' · '+escapeHtml(sess.location):'')} (${sess.type==='cash'?t('badge_cash'):t('badge_tournament')}) — ${sess.status==='open'?t('badge_open'):t('badge_closed')}</option>`).join('')}
+          <select onchange="selectHandsSession(this.value)" style="font-size:13px;">
+            ${sessions.map(sess => `<option value="${sess.id}" ${sess.id===handsSelectedSessionId?'selected':''}>${new Date(sess.date).toLocaleDateString(locale(),{day:'2-digit',month:'2-digit',year:'numeric'})}${sess.venue?' · 📍 '+escapeHtml(sess.venue):(sess.location?' · '+escapeHtml(sess.location):'')} (${sess.mode==='online'?'🌐 Online':(sess.type==='cash'?t('badge_cash'):t('badge_tournament'))}) — ${sess.status==='open'?t('badge_open'):t('badge_closed')}</option>`).join('')}
           </select>
         </div>
-        ${s ? unlockBarInlineHtml(s) : ''}
+        ${s && s.mode !== 'online' ? unlockBarInlineHtml(s) : ''}
       </div>
       <div id="unlock-error"></div>
     </div>`;
 
   const panelsMap = {
-    liveTable: !s ? `<div class="panel"><div class="empty-state"><strong>${t('no_session_selected')}</strong></div></div>` : renderTableModeBody(s),
+    liveTable: !s ? `<div class="panel"><div class="empty-state"><strong>${t('no_session_selected')}</strong></div></div>` : (s.mode === 'online' ? onlineLiveBodyHtml(s) : renderTableModeBody(s)),
     savedHands: savedHandsPanelHtml(sessions),
     tableDesignStandard: tableDesignStandardSectionHtml(),
     layoutEditorTab: layoutEditorTabSectionHtml()
@@ -7710,6 +7714,32 @@ function renderHands(){
     ${activeHandsTab==='liveTable' ? sessionBarHtml : ''}
     ${renderTabbedPanels('hands', panelsMap)}
   `;
+}
+function selectHandsSession(id){
+  const ns = getSession(id);
+  if(currentOnlineTableId && !(ns && ns.onlineTableId === currentOnlineTableId)) resetOnlineTableState();
+  handsSelectedSessionId = id;
+  render();
+}
+let onlineOpeningId = null;
+// Online-Session im Live-Tisch-Reiter: Tisch automatisch laden/öffnen und anzeigen
+function onlineLiveBodyHtml(s){
+  const msg = txt => `<div class="panel"><div class="empty-state"><strong>${txt}</strong></div></div>`;
+  if(!s.onlineTableId) return msg('Diese Online-Session hat keinen Tisch.');
+  const tbl = onlineTables.find(x => x.id === s.onlineTableId);
+  if(!tbl){
+    if(!onlineLobbyLoaded){ onlineLobbyLoaded = true; loadOnlineTables(); return msg('Tisch wird geladen …'); }
+    return msg('Online-Tisch nicht gefunden (evtl. gelöscht).');
+  }
+  if(s.status === 'closed') return msg('Diese Online-Session ist beendet — Ergebnis siehe Sessions, Hände unter «Erfasste Hände».');
+  if(currentOnlineTableId !== s.onlineTableId){
+    if(onlineOpeningId !== s.onlineTableId){
+      onlineOpeningId = s.onlineTableId;
+      Promise.resolve(openOnlineTable(s.onlineTableId)).finally(() => { onlineOpeningId = null; });
+    }
+    return msg('Tisch wird geöffnet …');
+  }
+  return renderOnlineTableView();
 }
 function unlockBarInlineHtml(s){
   const unlocked = isUnlocked(s);
