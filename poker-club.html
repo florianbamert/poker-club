@@ -470,6 +470,11 @@
   .board-cards[data-from="3"] > .board-card:nth-child(4){ animation:dealIn .55s cubic-bezier(.2,.8,.25,1) both; animation-delay:calc(var(--ad,0ms) + 0ms); }
   .board-cards[data-from="3"] > .board-card:nth-child(5){ animation:dealIn .55s cubic-bezier(.2,.8,.25,1) both; animation-delay:calc(var(--ad,0ms) + 140ms); }
   .board-cards[data-from="4"] > .board-card:nth-child(5){ animation:dealIn .55s cubic-bezier(.2,.8,.25,1) both; animation-delay:calc(var(--ad,0ms) + 0ms); }
+  .board-cards[data-new="0"] > .board-card:nth-child(1){ animation:dealIn .5s cubic-bezier(.2,.8,.25,1) both; animation-delay:var(--ad,0ms); }
+  .board-cards[data-new="1"] > .board-card:nth-child(2){ animation:dealIn .5s cubic-bezier(.2,.8,.25,1) both; animation-delay:var(--ad,0ms); }
+  .board-cards[data-new="2"] > .board-card:nth-child(3){ animation:dealIn .5s cubic-bezier(.2,.8,.25,1) both; animation-delay:var(--ad,0ms); }
+  .board-cards[data-new="3"] > .board-card:nth-child(4){ animation:dealIn .5s cubic-bezier(.2,.8,.25,1) both; animation-delay:var(--ad,0ms); }
+  .board-cards[data-new="4"] > .board-card:nth-child(5){ animation:dealIn .5s cubic-bezier(.2,.8,.25,1) both; animation-delay:var(--ad,0ms); }
   @keyframes abPop{
     0%{ opacity:0; transform:translate(-50%, calc(-50% - 4cqw)) scale(.3); }
     10%{ opacity:1; transform:translate(-50%, calc(-50% - 6.5cqw)) scale(1.18); }
@@ -10295,6 +10300,15 @@ async function handAction(actionType, amount){
   snapshotHandFlowForUndo();
   const pid = handFlow.queue.shift();
   const street = handFlow.street;
+  // Tisch-Sound (gleiche Einstellung wie am Online-Tisch)
+  try{
+    if(actionType === 'fold') onlineSound('fold');
+    else if(actionType === 'checkcall') onlineSound(handFlow.currentBet > (handFlow.streetContrib[pid]||0) ? 'call' : 'check');
+    else if(actionType === 'betraise'){
+      const rem = remainingStackFor(pid);
+      onlineSound((rem !== null && Number(amount||0) >= (handFlow.streetContrib[pid]||0) + rem - 0.001) ? 'allin' : (Number(amount||0) > handFlow.currentBet + 0.001 ? 'raise' : 'call'));
+    }
+  }catch(e){}
   if(actionType === 'fold'){
     handFlow.folded.add(pid);
     handFlow.actions[street].push({playerId:pid, action:'fold'});
@@ -10441,6 +10455,14 @@ function advanceStreet(){
   handFlow.pendingCardsTotal = handFlow.pendingCardsNeeded;
   render();
 }
+let handFlowBoardAnim = null;
+function handFlowBoardAnimAttr(){
+  // Handerfassung: nur die zuletzt eingegebene Karte "austeilen"
+  if(!handFlowBoardAnim) return '';
+  const el = Date.now() - handFlowBoardAnim.t0;
+  if(el > 1200) return '';
+  return ` data-new="${handFlowBoardAnim.from}" style="--ad:${-el}ms;"`;
+}
 function pickBoardCard(rank, suit){
   if(!canWrite()) return;
   const code = rank+suit;
@@ -10458,6 +10480,7 @@ function pickBoardCard(rank, suit){
   handFlow.board.push(code);
   handFlow.usedCards.add(code);
   handFlow.pendingCardsNeeded--;
+  handFlowBoardAnim = { from: handFlow.board.length - 1, t0: Date.now() }; onlineSound('deal', { n: 1 });
   if(handFlow.pendingCardsNeeded<=0 && handFlow.allInRunout) advanceStreet(); else render();
 }
 function skipBoardCards(){
@@ -11125,7 +11148,7 @@ function renderHandFlowUI(s){
                 <div class="runs-boards">
                   ${handFlow.runs.map((runObj,i) => `<div class="run-board-row"><span class="run-board-label">R${i+1}</span>${runObj.board.map(cardChipHtml).join('')}</div>`).join('')}
                 </div>
-              ` : (handFlow.board.length ? `<div class="board-cards">${handFlow.board.map(cardChipHtml).join('')}</div>` : '')}
+              ` : (handFlow.board.length ? `<div class="board-cards"${handFlowBoardAnimAttr()}>${handFlow.board.map(cardChipHtml).join('')}</div>` : '')}
             </div>
           </div>
           <div class="pot-center${justCollected ? ' collecting' : ''}" style="${potCenterStyleAttr(handFlow.seats.length, s.id)}">
