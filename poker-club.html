@@ -460,6 +460,8 @@
   .action-bubble.ab-allin{ background:#e5463d; color:#fff; }
   /* Karten-Austeilen (Hole Cards + Flop/Turn/River): nutzt die einzelnen CSS-Properties translate/rotate/scale,
      damit die bestehenden transform-Angaben der Elemente unberührt bleiben */
+  @keyframes potFly{ 0%{ translate:0 0; scale:1; opacity:1; } 15%{ opacity:1; } 85%{ opacity:1; } 100%{ translate:var(--dx,0cqw) var(--dy,0cqw); scale:.55; opacity:0; } }
+  .pot-fly{ position:absolute; z-index:9; transform:translate(-50%,-50%); pointer-events:none; font-family:'Fraunces',serif; font-weight:700; font-size:1.3cqw; color:#fff; background:var(--brass); padding:.25cqw .8cqw; border-radius:99px; text-shadow:0 1px 2px rgba(0,0,0,.5); box-shadow:0 2px 8px rgba(0,0,0,.4); animation:potFly .85s cubic-bezier(.45,.05,.3,1) both; }
   @keyframes dealIn{ 0%{ translate:var(--dx,0cqw) var(--dy,-9cqw); rotate:-26deg; scale:.5; opacity:0; } 55%{ opacity:1; } 100%{ translate:0 0; rotate:0deg; scale:1; opacity:1; } }
   .deal-in{ animation:dealIn .6s cubic-bezier(.2,.8,.25,1) both; animation-delay:var(--ad,0ms); }
   .board-cards[data-from="0"] > .board-card:nth-child(1){ animation:dealIn .55s cubic-bezier(.2,.8,.25,1) both; animation-delay:calc(var(--ad,0ms) + 0ms); }
@@ -1009,7 +1011,28 @@ function onlineAnimUpdate(hs, seatedCount){
     onlineSound('deal', { n: bl - onlineAnim.boardLen >= 3 ? 3 : 1 });
     onlineAnim.boardLen = bl;
   }
-  if(hs.hand_over && onlineAnim.doneHand !== hs.hand_no){ onlineAnim.doneHand = hs.hand_no; onlineSound('win'); }
+  if(hs.hand_over && onlineAnim.doneHand !== hs.hand_no){
+    onlineAnim.doneHand = hs.hand_no; onlineSound('win');
+    onlineAnim.potFly = { hand: hs.hand_no, t0: now, payouts: Object.assign({}, hs.payouts || {}), pot: Number(hs.pot || 0) };
+    setTimeout(() => { if(currentOnlineTableId) render(); }, ONLINE_POTFLY_MS + 60);
+  }
+}
+const ONLINE_POTFLY_MS = 850;
+let onlinePotPos = { x:50, y:50 };
+// 'flying' = Pot ist unterwegs, 'gone' = angekommen (Pot in der Mitte ausblenden), null = normal
+function onlinePotFlyPhase(hs){
+  const pf = onlineAnim && onlineAnim.potFly;
+  if(!hs || !hs.hand_over) return null;
+  if(!pf || pf.hand !== hs.hand_no) return 'gone';
+  return (Date.now() - pf.t0 < ONLINE_POTFLY_MS) ? 'flying' : 'gone';
+}
+function onlinePotFlyHtml(slot, seatNo, hs){
+  if(onlinePotFlyPhase(hs) !== 'flying') return '';
+  const amt = Number(onlineAnim.potFly.payouts[seatNo] || 0);
+  if(!(amt > 0.0001)) return '';
+  const el = Date.now() - onlineAnim.potFly.t0;
+  const dx = (slot.left - onlinePotPos.x).toFixed(1), dy = (slot.top - onlinePotPos.y).toFixed(1);
+  return `<div class="pot-fly" style="left:${onlinePotPos.x}%;top:${onlinePotPos.y}%;--dx:calc(${dx} * 1cqw);--dy:calc(${dy} * .55cqw);animation-delay:${-el}ms;">${fmtChipPlain(amt)}</div>`;
 }
 function onlineHoleAnimAttrs(slot, seatNo){
   if(!onlineAnim || !onlineAnim.holeT0) return { cls:'', style:'' };
@@ -1426,7 +1449,7 @@ function onlinePokerSeatHtml(slot, seatRow, seatNo, hs, isMe){
     <div class="poker-seat${folded?' folded':''}${isActor?' active':''}" ${slot.seatAttrs||''} style="left:${slot.left}%;top:${slot.top}%;width:${avatarSizePercent(slot.avatarScale)}%;z-index:${slot.zAvatar!=null?slot.zAvatar:2};">
       ${avatarHtml(displayObj, avatarSeatStyleAttr(slot.avatarScale, slot.zAvatar))}
       ${!useAbsoluteBox ? platePlateHtml : ''}
-    </div>${useAbsoluteBox ? platePlateHtml : ''}${standaloneNameHtml}${standaloneStackHtml}${standaloneHoleCardsHtml}${standalonePosTagHtml}${statusOverlayHtml}${onlineActionBubbleHtml(slot, seatNo)}`;
+    </div>${useAbsoluteBox ? platePlateHtml : ''}${standaloneNameHtml}${standaloneStackHtml}${standaloneHoleCardsHtml}${standalonePosTagHtml}${statusOverlayHtml}${onlineActionBubbleHtml(slot, seatNo)}${onlinePotFlyHtml(slot, seatNo, hs)}`;
 }
 
 // Sprechblase mit der letzten Aktion — läuft per CSS-Animation und wird nach ~2,6 s unsichtbar.
@@ -1566,6 +1589,7 @@ function renderOnlineTableViewInner(){
   // for an unrelated Hands-tab session (handsSelectedSessionId). Passing {} instead of null below
   // keeps tableFeltStyleAttr on its "no custom layout" default-felt branch without that leak.
 
+  onlinePotPos = { x: (chosenLayout && chosenLayout.potX!=null) ? chosenLayout.potX : 50, y: (chosenLayout && chosenLayout.potY!=null) ? chosenLayout.potY : 50 };
   const seatsHtml = Array.from({length: seatCount}, (_, seatNo) => {
     const seatRow = tbl.seats.find(s => s.seat_no === seatNo);
     const isMe = seatNo === onlineMySeat;
@@ -1595,8 +1619,10 @@ function renderOnlineTableViewInner(){
               ${hs && hs.board && hs.board.length ? `<div class="board-cards"${onlineBoardAnimAttr()}>${hs.board.map(cardChipHtml).join('')}</div>` : ''}
             </div>
             <div class="pot-center" style="${chosenLayout && chosenLayout.potX!=null && chosenLayout.potY!=null ? `left:${chosenLayout.potX}%;top:${chosenLayout.potY}%;transform:translate(-50%,-50%);` : ''}">
+              <div${onlinePotFlyPhase(hs) ? ' style="visibility:hidden;"' : ''}>
               <div class="amt">${fmtChipPlain(hs ? hs.pot : 0)}</div>
               <div class="lbl">Pot</div>
+              </div>
             </div>
           </div>
         </div>
