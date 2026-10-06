@@ -12668,6 +12668,7 @@ function openSheetImportOverlay(){
           <img src="${s.dataUrl}" style="position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;" draggable="false">
           <div id="sheet-grid-lines"></div>
           <div id="sheet-rect-outline" style="position:absolute;border:2px solid #ffcc33;pointer-events:none;box-sizing:border-box;"></div>
+          ${[['vL1','1. Linie links: Rahmenabstand'],['vR1','Kartenbreite (rechte Kante der 1. Karte)'],['vL2','Abstand seitlich zwischen Karten'],['vRN','letzte Linie rechts: Rahmenabstand'],['hT1','1. Linie oben: Rahmenabstand'],['hB1','Kartenhöhe (untere Kante der 1. Karte)'],['hT2','Abstand oben/unten zwischen Karten'],['hBN','letzte Linie unten: Rahmenabstand']].map(([k,tt]) => `<div id="sheet-handle-${k}" class="sheet-handle" title="${tt}" style="position:absolute;width:14px;height:14px;margin-left:-7px;margin-top:-7px;background:#ff8c1a;border:2px solid #1a1a1a;border-radius:3px;transform:rotate(45deg);cursor:${k[0]==='v'?'ew-resize':'ns-resize'};z-index:4;"></div>`).join('')}
           ${['tl','tr','bl','br'].map(k => `<div id="sheet-handle-${k}" class="sheet-handle" style="position:absolute;width:18px;height:18px;margin-left:-9px;margin-top:-9px;border-radius:50%;background:#ffcc33;border:2px solid #1a1a1a;cursor:grab;z-index:3;"></div>`).join('')}
         </div>
       </div>
@@ -12683,7 +12684,7 @@ function openSheetImportOverlay(){
       </div>
     </div>`;
   document.body.appendChild(overlay);
-  ['tl','tr','bl','br'].forEach(k => {
+  ['tl','tr','bl','br','vL1','vR1','vL2','vRN','hT1','hB1','hT2','hBN'].forEach(k => {
     const h = document.getElementById('sheet-handle-'+k);
     const down = e => { e.preventDefault(); if(sheetImportState) sheetImportState.dragging = k; };
     h.addEventListener('mousedown', down);
@@ -12709,6 +12710,22 @@ function sheetContainerPointerMove(x, y){
   const px = Math.max(0, Math.min(100, (x - r.left) / r.width * 100));
   const py = Math.max(0, Math.min(100, (y - r.top) / r.height * 100));
   const MIN = 5, d = s.dragging;
+  if(d.length > 2){
+    // Innenlinien: Position in Bildpixeln → passenden Parameter setzen
+    const X = px/100*s.naturalW, Y = py/100*s.naturalH;
+    const b = sheetBlockPx(s);
+    const needCard = () => { if(!(s.cardW > 0 && s.cardH > 0)){ s.cardW = b.cw; s.cardH = b.ch; } s.cardManual = true; };
+    if(d === 'vL1') s.marginL = Math.max(0, X - s.rect.left/100*s.naturalW);
+    else if(d === 'vRN') s.marginR = Math.max(0, s.rect.right/100*s.naturalW - X);
+    else if(d === 'hT1') s.marginT = Math.max(0, Y - s.rect.top/100*s.naturalH);
+    else if(d === 'hBN') s.marginB = Math.max(0, s.rect.bottom/100*s.naturalH - Y);
+    else if(d === 'vR1'){ needCard(); s.cardW = Math.max(1, X - b.x0); }
+    else if(d === 'hB1'){ needCard(); s.cardH = Math.max(1, Y - b.y0); }
+    else if(d === 'vL2'){ s.cardManual = false; s.gapX = Math.max(0, X - (b.x0 + b.cw)); }
+    else if(d === 'hT2'){ s.cardManual = false; s.gapY = Math.max(0, Y - (b.y0 + b.ch)); }
+    renderSheetOverlayVisuals();
+    return;
+  }
   if(d === 'tl' || d === 'bl') s.rect.left = Math.min(px, s.rect.right - MIN);
   if(d === 'tr' || d === 'br') s.rect.right = Math.max(px, s.rect.left + MIN);
   if(d === 'tl' || d === 'tr') s.rect.top = Math.min(py, s.rect.bottom - MIN);
@@ -12821,6 +12838,16 @@ function renderSheetOverlayVisuals(){
   sync('sheet-cardW', b.cw); sync('sheet-cardH', b.ch);
   ['sheet-gapX','sheet-gapY'].forEach(id => { const v = id === 'sheet-gapX' ? s.gapX : s.gapY; sync(id, v); sync(id+'-n', v); });
   const px = v => v/s.naturalW*100, py = v => v/s.naturalH*100;
+  ['L','R','T','B'].forEach(k => { const v = s['margin'+k]; sync('sheet-margin'+k, v); sync('sheet-margin'+k+'-n', v); });
+  const hpos = (id, xPct, yPct, show) => { const el = document.getElementById('sheet-handle-'+id); if(el){ el.style.display = show===false ? 'none' : ''; el.style.left = xPct+'%'; el.style.top = yPct+'%'; } };
+  {
+    const midY = (f) => py(b.y0 + b.bh*f), midX = (f) => px(b.x0 + b.bw*f);
+    const c1r = b.x0 + b.cw, c2l = b.x0 + b.cw + s.gapX, r1b = b.y0 + b.ch, r2t = b.y0 + b.ch + s.gapY;
+    hpos('vL1', px(b.x0), midY(.3)); hpos('vRN', px(b.x1), midY(.3));
+    hpos('vR1', px(c1r), midY(.5)); hpos('vL2', px(c2l), midY(.7), s.cols > 1);
+    hpos('hT1', midX(.3), py(b.y0)); hpos('hBN', midX(.3), py(b.y1));
+    hpos('hB1', midX(.5), py(r1b)); hpos('hT2', midX(.7), py(r2t), s.rows > 1);
+  }
   const linesEl = document.getElementById('sheet-grid-lines');
   if(linesEl){
     const bx = px(b.x0), by = py(b.y0), bw = px(b.bw), bh = py(b.bh);
