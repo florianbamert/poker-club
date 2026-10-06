@@ -776,6 +776,20 @@ function openNewOnlineTableModal(){
     </div>`;
 }
 
+async function insertOnlineTableRow(sbVal, bbVal, seatCount, options){
+  const row = { club_id: currentClubId, small_blind: sbVal, big_blind: bbVal, seat_count: seatCount };
+  let { data: created, error } = await sb.from('online_tables').insert({ ...row, options }).select('id').single();
+  if(error && /options/i.test(error.message || '')){
+    // Spalte "options" fehlt (chipmate_online_table_options.sql nicht ausgeführt) → Optionen im Club ablegen
+    ({ data: created, error } = await sb.from('online_tables').insert(row).select('id').single());
+    if(!error && created){
+      ensureClubDefaults();
+      if(!currentClub.onlineTableOptions) currentClub.onlineTableOptions = {};
+      currentClub.onlineTableOptions[created.id] = options;
+    }
+  }
+  return { id: created ? created.id : null, error };
+}
 async function createOnlineTable(){
   const sb_ = parseFloat(document.getElementById('ot-sb').value);
   const bb_ = parseFloat(document.getElementById('ot-bb').value);
@@ -788,19 +802,9 @@ async function createOnlineTable(){
     sevenDeuceGame: document.getElementById('ot-seven-deuce').checked,
     notes: document.getElementById('ot-notes').value.trim()
   };
-  const row = { club_id: currentClubId, small_blind: sb_, big_blind: bb_, seat_count: seatCount };
-  let { data: created, error } = await sb.from('online_tables').insert({ ...row, options }).select('id').single();
-  if(error && /options/i.test(error.message || '')){
-    // Spalte "options" fehlt (chipmate_online_table_options.sql nicht ausgeführt) → Optionen im Club ablegen
-    ({ data: created, error } = await sb.from('online_tables').insert(row).select('id').single());
-    if(!error && created){
-      ensureClubDefaults();
-      if(!currentClub.onlineTableOptions) currentClub.onlineTableOptions = {};
-      currentClub.onlineTableOptions[created.id] = options;
-      saveClubData();
-    }
-  }
+  const { id: createdId, error } = await insertOnlineTableRow(sb_, bb_, seatCount, options);
   if(error){ showToast('Fehler: ' + error.message); return; }
+  if(currentClub.onlineTableOptions && currentClub.onlineTableOptions[createdId]) saveClubData();
   closeModal();
   onlineLobbyLoaded = false;
   await loadOnlineTables();
@@ -1103,7 +1107,8 @@ async function reallyCloseOnlineTable(){
   if(!tbl || !canWrite()){ showToast('Dafür fehlen dir Schreibrechte im Club.'); return; }
   const seated = tbl.seats.filter(s => s.user_id);
   const nowIso = new Date().toISOString();
-  const session = {
+  const linked = (currentClub.sessions || []).find(x => x.onlineTableId === currentOnlineTableId);
+  const session = linked || {
     id: uid(), type:'cash', date: todayLocalISO(), venue:'Online', notes:'Online-Tisch (automatisch aus Chipmate Online Poker übernommen)',
     pin: String(Math.floor(1000+Math.random()*9000)),
     sb: tbl.small_blind, bb: tbl.big_blind, ante:0,
@@ -1121,6 +1126,16 @@ async function reallyCloseOnlineTable(){
     equilibriumConfirmed:true, cashConfirmed:true, ranksConfirmed:false, payoutsConfirmed:false,
     createdAt: nowIso
   };
+  if(linked){
+    Object.assign(linked, {
+      status:'closed', seatOrder: seated.map(x => x.player_id), equilibriumConfirmed:true, cashConfirmed:true,
+      participants: seated.map(x => ({
+        playerId: x.player_id,
+        buyIns: [{ id: uid(), time: nowIso, amount: Number(x.buyin_total||0), currency: currentClub.info.currency, method:'Online' }],
+        chipCount: Number(x.stack||0), active:false, joinedAt:nowIso, leftAt:nowIso, finishRank:null
+      }))
+    });
+  }
   // Gespielte Hände samt Aktionsverlauf aus dem Serverprotokoll in die gespeicherten Hände übernehmen
   let handsSaved = 0;
   try{
@@ -1139,7 +1154,7 @@ async function reallyCloseOnlineTable(){
     console.error('Hände übernehmen fehlgeschlagen', e);
     showToast('Hände konnten nicht übernommen werden: ' + (e.message || e));
   }
-  currentClub.sessions.push(session);
+  if(!linked) currentClub.sessions.push(session);
   await saveClubData();
   const { error } = await sb.from('online_tables').update({ status:'finished' }).eq('id', currentOnlineTableId);
   if(error) showToast('Session übernommen, aber Tisch-Status konnte nicht aktualisiert werden: ' + error.message);
@@ -1147,6 +1162,7 @@ async function reallyCloseOnlineTable(){
   resetOnlineTableState();
   onlineLobbyLoaded = false;
   setView('sessions');
+  if(linked){ currentSessionId = linked.id; render(); }
 }
 
 async function addOnlineBuyin(){
@@ -4035,7 +4051,7 @@ function sessionRowHtml(s, showDelete){
         <div class="sub">${players} ${t('unit_players')}${s.type==='cash' ? (s.sb ? ' · ' + t('label_blinds') + ' ' + s.sb + '/' + s.bb : '') : (s.buyinAmount ? ' · ' + t('label_buyin_short') + ' ' + formatMoney(s.buyinAmount) : '')}</div>
       </div>
       <div class="right" style="display:flex;align-items:center;gap:8px;">
-        <span class="badge badge-type">${s.type === 'cash' ? t('badge_cash') : t('badge_tournament')}</span>
+        <span class="badge badge-type">${s.mode==='online' ? '🌐 Online' : (s.type === 'cash' ? t('badge_cash') : t('badge_tournament'))}</span>
         <span class="badge ${s.status==='open' ? 'badge-open' : 'badge-closed'}">${s.status==='open' ? t('badge_open') : t('badge_closed')}</span>
         ${showDelete && canWrite() ? `<button class="icon-btn danger" title="Session löschen" onclick="event.stopPropagation(); deleteSessionPrompt('${s.id}')">${ICON_ARCHIVE}</button>` : ''}
       </div>
@@ -4072,6 +4088,12 @@ function openNewSessionModal(prefill){
       <div class="modal">
         <h2>${t('new_session_title')}</h2>
         <p class="hint">${t('new_session_hint')}</p>
+        <div class="field"><label>Art der Session</label>
+          <select id="ns-mode" onchange="toggleSessionMode()">
+            <option value="home" ${prefill.mode!=='online'?'selected':''}>🏠 Homegame-Tracking</option>
+            <option value="online" ${prefill.mode==='online'?'selected':''}>🌐 Online-Session (Chipmate Online Poker)</option>
+          </select>
+        </div>
         <div class="field-row">
           <div class="field"><label>${t('label_date')}</label><input id="ns-date" type="date" value="${today}"></div>
           ${currentClub.venues && currentClub.venues.length ? venueSelectFieldHtml(prefill.venue||'') : ''}
@@ -4095,6 +4117,9 @@ function openNewSessionModal(prefill){
               ${(currentClub.betGridProfiles||[]).map(bg => `<option value="${bg.id}" data-type="${bg.type}">${escapeHtml(bg.name)} (${bg.type==='cash'?(t('badge_cash')+' · SB '+formatMoney(bg.targetSb||0)):t('badge_tournament')})</option>`).join('')}
             </select>
           </div>
+        </div>
+        <div id="ns-online-fields" class="field" style="display:none;"><label>Sitzplätze am Online-Tisch</label>
+          <select id="ns-seatcount"><option value="2" selected>Heads-up (2)</option><option value="6">6-Max</option><option value="10">10-Max</option></select>
         </div>
         <div id="ns-cash-fields" class="field-row">
           <div class="field"><label>${t('label_sb')}</label><input id="ns-sb" type="number" min="0" step="0.5" placeholder="${t('placeholder_amount')}"></div>
@@ -4148,7 +4173,7 @@ function openNewSessionModal(prefill){
           </div>
         </div>
         <div class="field"><label>${t('label_notes_optional')} <span class="sublabel">${t('sublabel_optional')}</span></label><textarea id="ns-notes" placeholder="${t('placeholder_notes')}">${escapeHtml(prefill.notes||'')}</textarea></div>
-        <div class="field"><label>${t('label_session_pin')} <span class="sublabel">${t('sublabel_pin_digits')}</span></label><input id="ns-pin" type="text" maxlength="4" placeholder="4821" value="${String(Math.floor(1000+Math.random()*9000))}"></div>
+        <div class="field" id="ns-pin-field"><label>${t('label_session_pin')} <span class="sublabel">${t('sublabel_pin_digits')}</span></label><input id="ns-pin" type="text" maxlength="4" placeholder="4821" value="${String(Math.floor(1000+Math.random()*9000))}"></div>
         <input type="hidden" id="ns-event-id" value="${prefill.eventId||''}">
         <div id="ns-error"></div>
         <div class="modal-actions">
@@ -4158,6 +4183,17 @@ function openNewSessionModal(prefill){
       </div>
     </div>`;
   if(prefill.type==='tournament') toggleSessionTypeFields();
+  toggleSessionMode();
+}
+// Online-Session: immer Cash, kein Venue/PIN/Turnier-Felder — der Tisch läuft über Chipmate Online Poker
+function toggleSessionMode(){
+  const online = document.getElementById('ns-mode').value === 'online';
+  const typeSel = document.getElementById('ns-type');
+  if(online){ typeSel.value = 'cash'; toggleSessionTypeFields(); }
+  typeSel.closest('.field').style.display = online ? 'none' : '';
+  const venue = document.getElementById('ns-venue'); if(venue && venue.closest('.field')) venue.closest('.field').style.display = online ? 'none' : '';
+  const pin = document.getElementById('ns-pin-field'); if(pin) pin.style.display = online ? 'none' : '';
+  document.getElementById('ns-online-fields').style.display = online ? '' : 'none';
 }
 function toggleSessionTypeFields(){
   const isCash = document.getElementById('ns-type').value === 'cash';
@@ -4193,9 +4229,40 @@ async function submitNewSession(){
   const venue = document.getElementById('ns-venue') ? document.getElementById('ns-venue').value : '';
   const type = document.getElementById('ns-type').value;
   const notes = document.getElementById('ns-notes').value.trim();
-  const pin = document.getElementById('ns-pin').value.trim();
+  const isOnline = document.getElementById('ns-mode').value === 'online';
+  const pin = isOnline ? String(Math.floor(1000+Math.random()*9000)) : document.getElementById('ns-pin').value.trim();
   const errBox = document.getElementById('ns-error');
   if(!date){ errBox.innerHTML = `<div class="error-msg">${t('err_need_date')}</div>`; return; }
+  if(isOnline){
+    const sbV = parseFloat(document.getElementById('ns-sb').value), bbV = parseFloat(document.getElementById('ns-bb').value);
+    if(!(sbV > 0) || !(bbV > 0) || bbV < sbV){ errBox.innerHTML = `<div class="error-msg">Blinds eingeben (Big Blind nicht kleiner als Small Blind).</div>`; return; }
+    const options = {
+      chipProfileId: document.getElementById('ns-chipset').value || null,
+      betGridId: document.getElementById('ns-betgrid').value || null,
+      sevenDeuceGame: document.getElementById('ns-seven-deuce').checked,
+      notes
+    };
+    const { id: tableId, error: tErr } = await insertOnlineTableRow(sbV, bbV, parseInt(document.getElementById('ns-seatcount').value, 10), options);
+    if(tErr || !tableId){ errBox.innerHTML = `<div class="error-msg">Online-Tisch konnte nicht angelegt werden: ${escapeHtml(tErr ? tErr.message : '?')}</div>`; return; }
+    const os = {
+      id: uid(), type:'cash', mode:'online', onlineTableId: tableId, date, venue:'Online', notes, pin,
+      sb: sbV, bb: bbV, ante:0, blindTemplateId:null, blindLevelIndex:0, blindStartedAt:null, blindManualOffsetMs:0,
+      buyinAmount:null, startChips:null, rebuyAmount:null, rebuyChips:null, addonAmount:null, addonChips:null,
+      payoutMode:'percent', payoutPlaces:[100], payoutTemplateId:null,
+      status:'open', seatOrder:[], handCounter:0, participants:[], actualCash:null, actualTwint:null,
+      sevenDeuceGame: options.sevenDeuceGame, chipProfileId: options.chipProfileId, betGridProfileId: options.betGridId,
+      equilibriumConfirmed:true, cashConfirmed:true, ranksConfirmed:false, payoutsConfirmed:false,
+      createdAt:new Date().toISOString()
+    };
+    currentClub.sessions.push(os);
+    await saveClubData();
+    unlockedSessions.add(os.id);
+    closeModal();
+    onlineLobbyLoaded = false;
+    currentSessionId = os.id;
+    setView('sessions');
+    return;
+  }
   if(!/^[0-9]{4}$/.test(pin)){ errBox.innerHTML = `<div class="error-msg">${t('err_pin_format')}</div>`; return; }
 
   let payoutMode = 'percent', payoutPlaces = [100], payoutTemplateId = null;
@@ -4256,6 +4323,7 @@ async function submitNewSession(){
 /* ================= Session detail ================= */
 function renderSessionDetail(s){
   if(!s) return `<div class="panel">—</div>`;
+  if(s.mode === 'online') return renderOnlineSessionDetail(s);
   const unlocked = isUnlocked(s);
   const dateStr = new Date(s.date).toLocaleDateString(locale(), {day:'2-digit', month:'2-digit', year:'numeric'});
 
@@ -4458,6 +4526,60 @@ function renderSessionDetail(s){
   `;
 }
 
+/* ---- Online-Session: Detailansicht (ohne Chipcount/Kasse/Twint) ---- */
+function renderOnlineSessionDetail(s){
+  const dateStr = new Date(s.date).toLocaleDateString(locale(), {day:'2-digit', month:'2-digit', year:'numeric'});
+  const closed = s.status === 'closed';
+  const rows = (s.participants||[]).map(p => {
+    const pl = getPlayer(p.playerId); if(!pl) return '';
+    const buy = sumBuyIns(p), net = netFor(p);
+    return `<div class="participant-row">${avatarHtml(pl)}
+      <div><div class="p-name">${escapeHtml(fullName(pl))}</div><div class="p-status">Buy-in ${formatMoney(buy)} · Endstack ${p.chipCount!=null?formatMoney(p.chipCount):'–'}</div></div><div></div>
+      <div><div class="p-net ${net>0?'pos':(net<0?'neg':'zero')}" style="text-align:right;">${net!=null?formatMoney(net):'–'}</div></div></div>`;
+  }).join('');
+  return `
+    <button class="back-link" onclick="currentSessionId=null; render();">${t('session_back')}</button>
+    <div class="session-header"><div class="titles">
+      <h1 style="margin-bottom:0;">${dateStr} · 🌐 Online</h1>
+      <div class="badges">
+        <span class="badge badge-type">Online · ${t('badge_cash')}</span>
+        <span class="badge ${closed?'badge-closed':'badge-open'}">${closed?t('badge_closed'):t('badge_open')}</span>
+        <span class="badge badge-type">${t('label_blinds')} ${s.sb}/${s.bb}</span>
+      </div></div></div>
+    ${s.notes ? `<p class="lede" style="margin-top:-14px;">${escapeHtml(s.notes)}</p>` : ''}
+    <div class="panel">
+      <div class="panel-head"><h3>Online-Tisch</h3></div>
+      ${closed ? `
+        ${rows || '<div class="empty-state"><strong>Keine Teilnehmer</strong></div>'}
+        <button class="btn btn-secondary" style="width:100%;margin-top:14px;" onclick="goToHandsForSession('${s.id}')">${t('btn_go_to_hands')}</button>
+      ` : `
+        <p class="lede" style="margin-top:0;">Spieler setzen sich am Tisch, die Karten werden automatisch verteilt. Buy-ins und Endstände kommen direkt vom Tisch — keine Chip- oder Kassenzählung nötig.</p>
+        <button class="btn btn-primary" style="width:100%;font-size:15px;" onclick="openOnlineSessionTable('${s.id}')">🌐 Zum Online-Tisch</button>
+        ${canWrite() ? `<button class="btn btn-secondary" style="width:100%;margin-top:10px;" onclick="closeOnlineSessionFromDetail('${s.id}')">Session beenden &amp; Ergebnis übernehmen</button>` : ''}
+      `}
+    </div>
+    ${closed ? `
+    <div class="panel" style="opacity:.75;">
+      <div class="panel-head"><h3>🧮 Theoretical Settlement Calculator</h3><span class="badge badge-type">kommt bald</span></div>
+      <p class="lede" style="margin:0;">Berechnet aus den Online-Ergebnissen, wer wem wie viel schuldet.</p>
+    </div>` : ''}
+  `;
+}
+async function openOnlineSessionTable(sessionId){
+  const s = getSession ? getSession(sessionId) : currentClub.sessions.find(x => x.id === sessionId);
+  if(!s || !s.onlineTableId) return;
+  await loadOnlineTables();
+  currentSessionId = null;
+  setView('online');
+  await openOnlineTable(s.onlineTableId);
+}
+async function closeOnlineSessionFromDetail(sessionId){
+  const s = currentClub.sessions.find(x => x.id === sessionId);
+  if(!s || !s.onlineTableId) return;
+  await loadOnlineTables();
+  currentOnlineTableId = s.onlineTableId;
+  closeOnlineTable();
+}
 function tournamentParticipantRowHtml(s, p, unlocked){
   const player = getPlayer(p.playerId);
   if(!player) return '';
