@@ -776,9 +776,14 @@ function openNewOnlineTableModal(){
     </div>`;
 }
 
-async function insertOnlineTableRow(sbVal, bbVal, seatCount, options){
+async function insertOnlineTableRow(sbVal, bbVal, seatCount, options, layoutId){
   const row = { club_id: currentClubId, small_blind: sbVal, big_blind: bbVal, seat_count: seatCount };
+  if(layoutId) row.layout_id = layoutId;   // Skin-Vorgabe des Admins (alle sehen sie zuerst; jede Person kann persönlich wechseln)
   let { data: created, error } = await sb.from('online_tables').insert({ ...row, options }).select('id').single();
+  if(error && layoutId && /layout_id/i.test(error.message || '')){
+    delete row.layout_id;
+    ({ data: created, error } = await sb.from('online_tables').insert({ ...row, options }).select('id').single());
+  }
   if(error && /options/i.test(error.message || '')){
     // Spalte "options" fehlt (chipmate_online_table_options.sql nicht ausgeführt) → Optionen im Club ablegen
     ({ data: created, error } = await sb.from('online_tables').insert(row).select('id').single());
@@ -4121,7 +4126,10 @@ function openNewSessionModal(prefill){
           </div>
         </div>
         <div id="ns-online-fields" class="field" style="display:none;"><label>Sitzplätze am Online-Tisch</label>
-          <select id="ns-seatcount"><option value="2" selected>Heads-up (2)</option><option value="6">6-Max</option><option value="10">10-Max</option></select>
+          <select id="ns-seatcount" onchange="refreshNsLayoutOptions()"><option value="2" selected>Heads-up (2)</option><option value="6">6-Max</option><option value="10">10-Max</option></select>
+          <label style="margin-top:10px;">Tisch-Skin (Layout-Vorlage) <span class="sublabel">${t('sublabel_optional')}</span></label>
+          <select id="ns-layout"><option value="">— Standard-Tisch —</option></select>
+          <p class="lede" style="font-size:11.5px;margin:6px 0 0;">Die Layout-Vorlagen kannst nur du als Admin ändern. Spieler wählen am Tisch höchstens eine andere Vorlage für die eigene Ansicht und gestalten Karten/Farben persönlich.</p>
         </div>
         <div id="ns-cash-fields" class="field-row">
           <div class="field"><label>${t('label_sb')}</label><input id="ns-sb" type="number" min="0" step="0.5" placeholder="${t('placeholder_amount')}"></div>
@@ -4188,6 +4196,12 @@ function openNewSessionModal(prefill){
   toggleSessionMode();
 }
 // Online-Session: immer Cash, kein Venue/PIN/Turnier-Felder — der Tisch läuft über Chipmate Online Poker
+function refreshNsLayoutOptions(){
+  const sel = document.getElementById('ns-layout'), sc = document.getElementById('ns-seatcount');
+  if(!sel || !sc) return;
+  const n = parseInt(sc.value, 10);
+  sel.innerHTML = '<option value="">— Standard-Tisch —</option>' + (layoutTemplates || []).filter(lt => lt.seatCount === n).map(lt => `<option value="${lt.id}">${escapeHtml(lt.name)}</option>`).join('');
+}
 function toggleSessionMode(){
   const online = document.getElementById('ns-mode').value === 'online';
   const typeSel = document.getElementById('ns-type');
@@ -4196,6 +4210,7 @@ function toggleSessionMode(){
   const venue = document.getElementById('ns-venue'); if(venue && venue.closest('.field')) venue.closest('.field').style.display = online ? 'none' : '';
   const pin = document.getElementById('ns-pin-field'); if(pin) pin.style.display = online ? 'none' : '';
   document.getElementById('ns-online-fields').style.display = online ? '' : 'none';
+  if(online) refreshNsLayoutOptions();
 }
 function toggleSessionTypeFields(){
   const isCash = document.getElementById('ns-type').value === 'cash';
@@ -4244,7 +4259,7 @@ async function submitNewSession(){
       sevenDeuceGame: document.getElementById('ns-seven-deuce').checked,
       notes
     };
-    const { id: tableId, error: tErr } = await insertOnlineTableRow(sbV, bbV, parseInt(document.getElementById('ns-seatcount').value, 10), options);
+    const { id: tableId, error: tErr } = await insertOnlineTableRow(sbV, bbV, parseInt(document.getElementById('ns-seatcount').value, 10), options, document.getElementById('ns-layout').value || null);
     if(tErr || !tableId){ errBox.innerHTML = `<div class="error-msg">Online-Tisch konnte nicht angelegt werden: ${escapeHtml(tErr ? tErr.message : '?')}</div>`; return; }
     const os = {
       id: uid(), type:'cash', mode:'online', onlineTableId: tableId, date, venue:'Online', notes, pin,
