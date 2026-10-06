@@ -12561,7 +12561,7 @@ function handleCardSheetUpload(input){
         rect: { left:0, top:0, right:100, bottom:100 },
         rows: 4,
         cols: 13,
-        cardManual: false, cardW: null, cardH: null, gapX: 0, gapY: 0, marginX: 0, marginY: 0, zoom: 1,
+        cardManual: false, cardW: null, cardH: null, gapX: 0, gapY: 0, marginL: 0, marginR: 0, marginT: 0, marginB: 0, zoom: 1,
         dragging: null,
         step: 1,
         cellImages: null,
@@ -12587,8 +12587,8 @@ function sheetImportDisplaySize(){
 // (px). Kartengrösse = (Blockgrösse − Abstände) / Anzahl. Pro Karte zwei gelbe Linien (linke/rechte bzw.
 // obere/untere Kante) → vor der ersten Karte eine, zwischen Karten zwei, nach der letzten eine.
 function sheetBlockPx(s){
-  const x0 = s.rect.left/100*s.naturalW + s.marginX, y0 = s.rect.top/100*s.naturalH + s.marginY;
-  const x1 = s.rect.right/100*s.naturalW - s.marginX, y1 = s.rect.bottom/100*s.naturalH - s.marginY;
+  const x0 = s.rect.left/100*s.naturalW + s.marginL, y0 = s.rect.top/100*s.naturalH + s.marginT;
+  const x1 = s.rect.right/100*s.naturalW - s.marginR, y1 = s.rect.bottom/100*s.naturalH - s.marginB;
   const bw = Math.max(1, x1 - x0), bh = Math.max(1, y1 - y0);
   let cw, ch;
   if(s.cardManual && s.cardW > 0 && s.cardH > 0){
@@ -12634,8 +12634,10 @@ function openSheetImportOverlay(){
         <div style="display:flex;flex-wrap:wrap;gap:8px 20px;">
           ${sliderRow('Abstand seitlich ↔','sheet-gapX',s.gapX,maxGapX,' px','onSheetSlider')}
           ${sliderRow('Abstand oben/unten ↕','sheet-gapY',s.gapY,maxGapY,' px','onSheetSlider')}
-          ${sliderRow('Rahmen → 1. Linie seitlich ↔','sheet-marginX',s.marginX,maxMarginX,' px','onSheetSlider')}
-          ${sliderRow('Rahmen → 1. Linie oben/unten ↕','sheet-marginY',s.marginY,maxMarginY,' px','onSheetSlider')}
+          ${sliderRow('Rahmen → 1. Linie links','sheet-marginL',s.marginL,maxMarginX,' px','onSheetSlider')}
+          ${sliderRow('Rahmen → letzte Linie rechts','sheet-marginR',s.marginR,maxMarginX,' px','onSheetSlider')}
+          ${sliderRow('Rahmen → 1. Linie oben','sheet-marginT',s.marginT,maxMarginY,' px','onSheetSlider')}
+          ${sliderRow('Rahmen → letzte Linie unten','sheet-marginB',s.marginB,maxMarginY,' px','onSheetSlider')}
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;">
           <span class="lede" style="margin:0;font-weight:700;">Karte manuell:</span>
@@ -12741,7 +12743,7 @@ function onSheetSlider(id, fromNumber){
   const sl = document.getElementById(id), nm = document.getElementById(id+'-n');
   const v = Math.max(0, Number((fromNumber ? nm : sl).value) || 0);
   if(fromNumber){ sl.value = v; } else { nm.value = v; }
-  if(id === 'sheet-gapX'){ s.gapX = v; s.cardManual = false; } else if(id === 'sheet-gapY'){ s.gapY = v; s.cardManual = false; } else if(id === 'sheet-marginX') s.marginX = v; else if(id === 'sheet-marginY') s.marginY = v;
+  if(id === 'sheet-gapX'){ s.gapX = v; s.cardManual = false; } else if(id === 'sheet-gapY'){ s.gapY = v; s.cardManual = false; } else if(id === 'sheet-marginL') s.marginL = v; else if(id === 'sheet-marginR') s.marginR = v; else if(id === 'sheet-marginT') s.marginT = v; else if(id === 'sheet-marginB') s.marginB = v;
   renderSheetOverlayVisuals();
 }
 function updateSheetRectFromInputs(){
