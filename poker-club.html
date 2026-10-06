@@ -1198,6 +1198,7 @@ function backToOnlineLobby(){
 function closeOnlineTable(){
   const tbl = onlineTables.find(x => x.id === currentOnlineTableId);
   if(!tbl) return;
+  if(!isClubAdmin()){ showToast('Nur ein Club-Admin darf den Tisch schliessen.'); return; }
   const seated = tbl.seats.filter(s => s.user_id);
   if(seated.length < 2){ showToast('Tisch braucht zwei besetzte Plätze.'); return; }
   if(seated.some(s => !s.player_id)){ showToast('Mindestens ein Platz ist keinem verknüpften Spieler zugeordnet — Ergebnis kann nicht übernommen werden.'); return; }
@@ -1259,7 +1260,7 @@ function onlineHistoryRowToHand(row, handNumber, sessionId, pidOfSeat){
 }
 async function reallyCloseOnlineTable(){
   const tbl = onlineTables.find(x => x.id === currentOnlineTableId);
-  if(!tbl || !canWrite()){ showToast('Dafür fehlen dir Schreibrechte im Club.'); return; }
+  if(!tbl || !isClubAdmin()){ showToast('Nur ein Club-Admin darf den Tisch schliessen.'); return; }
   const seated = tbl.seats.filter(s => s.user_id);
   const nowIso = new Date().toISOString();
   const linked = (currentClub.sessions || []).find(x => x.onlineTableId === currentOnlineTableId);
@@ -1310,6 +1311,15 @@ async function reallyCloseOnlineTable(){
     showToast('Hände konnten nicht übernommen werden: ' + (e.message || e));
   }
   if(!linked) currentClub.sessions.push(session);
+  // Protokoll: wer hat den Tisch geschlossen, und sass er selbst am Tisch?
+  const closedBy = {
+    userId: currentUser ? currentUser.id : null, email: currentUser ? currentUser.email : null, at: nowIso,
+    wasSeated: seated.some(x => currentUser && x.user_id === currentUser.id)
+  };
+  session.closedBy = closedBy;
+  if(!currentClub.activityLog) currentClub.activityLog = [];
+  currentClub.activityLog.push({ ts: nowIso, type: 'online_table_closed', sessionId: session.id, tableId: currentOnlineTableId, by: closedBy.email, userId: closedBy.userId, wasSeated: closedBy.wasSeated, hands: handsSaved });
+  if(currentClub.activityLog.length > 500) currentClub.activityLog = currentClub.activityLog.slice(-500);
   await saveClubData();
   const { error } = await sb.from('online_tables').update({ status:'finished' }).eq('id', currentOnlineTableId);
   if(error) showToast('Session übernommen, aber Tisch-Status konnte nicht aktualisiert werden: ' + error.message);
@@ -1573,7 +1583,7 @@ function renderOnlineTableViewInner(){
   // SQL-Funktion) — funktioniert jetzt für 2 bis seat_count Sitze, nicht mehr nur Heads-up.
   const stackedSeats = seatedRows.filter(s => Number(s.stack || 0) > 0 && !s.sitting_out);
   const canStart = !isFinished && (!hs || phase === 'done' || phase === 'waiting') && stackedSeats.length >= 2;
-  const canClose = !isFinished && (!hs || phase === 'done' || phase === 'waiting') && seatedRows.length >= 2 && seatedRows.every(s => s.player_id);
+  const canClose = isClubAdmin() && !isFinished && (!hs || phase === 'done' || phase === 'waiting') && seatedRows.length >= 2 && seatedRows.every(s => s.player_id);
 
   const myBet = hs && hs.bets ? (hs.bets[String(onlineMySeat)] || 0) : 0;
   const currentMaxBet = hs && hs.bets ? Math.max(0, ...Object.values(hs.bets).map(Number)) : 0;
@@ -4811,11 +4821,12 @@ function renderOnlineSessionDetail(s){
       <div class="panel-head"><h3>Online-Tisch</h3></div>
       ${closed ? `
         ${rows || '<div class="empty-state"><strong>Keine Teilnehmer</strong></div>'}
+        ${s.closedBy ? `<p class="lede" style="margin:12px 0 0;font-size:12px;">Geschlossen von ${escapeHtml(s.closedBy.email || 'unbekannt')} am ${new Date(s.closedBy.at).toLocaleString(locale(), {day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit'})}${s.closedBy.wasSeated ? '' : ' <strong>(nicht am Tisch gesessen)</strong>'}</p>` : ''}
         <button class="btn btn-secondary" style="width:100%;margin-top:14px;" onclick="goToHandsForSession('${s.id}')">${t('btn_go_to_hands')}</button>
       ` : `
         <p class="lede" style="margin-top:0;">Spieler setzen sich am Tisch, die Karten werden automatisch verteilt. Buy-ins und Endstände kommen direkt vom Tisch — keine Chip- oder Kassenzählung nötig.</p>
         <button class="btn btn-primary" style="width:100%;font-size:15px;" onclick="openOnlineSessionTable('${s.id}')">🌐 Zum Online-Tisch</button>
-        ${canWrite() ? `<button class="btn btn-secondary" style="width:100%;margin-top:10px;" onclick="closeOnlineSessionFromDetail('${s.id}')">Session beenden &amp; Ergebnis übernehmen</button>` : ''}
+        ${isClubAdmin() ? `<button class="btn btn-secondary" style="width:100%;margin-top:10px;" onclick="closeOnlineSessionFromDetail('${s.id}')">Session beenden &amp; Ergebnis übernehmen</button>` : ''}
       `}
     </div>
     ${closed ? `
