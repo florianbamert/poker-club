@@ -1295,7 +1295,7 @@ function onlinePokerSeatHtml(slot, seatRow, seatNo, hs, isMe){
   // Vertikaler Anker wie bei renderHandFlowUI: im Showdown dürfen die aufgedeckten
   // Karten komplett sichtbar sein (-55%), sonst wachsen sie überwiegend nach unten (-20%).
   const holeCardsVAnchor = (phase === 'showdown' || phase === 'done') ? -55 : -20;
-  const standaloneHoleCardsHtml = (!folded && cardsHtml) ? `<div class="seat-holecards${slot.holeCardsCompact?' compact':''}" style="position:absolute;left:${slot.holeCardsX}%;top:${slot.holeCardsY}%;transform:translate(-50%,${holeCardsVAnchor}%) scale(${slot.holeCardsScale});z-index:${slot.zHoleCards!=null?slot.zHoleCards:3};">${cardsHtml}</div>` : '';
+  const standaloneHoleCardsHtml = (!folded && cardsHtml) ? `<div class="seat-holecards${slot.holeCardsCompact?' compact':''}" style="position:absolute;left:${slot.holeCardsX}%;top:${slot.holeCardsY + ((onlineDesignActive && onlineDesignActive.holeDy) || 0)}%;transform:translate(-50%,${holeCardsVAnchor}%) scale(${slot.holeCardsScale});z-index:${slot.zHoleCards!=null?slot.zHoleCards:3};">${cardsHtml}</div>` : '';
   const platePlateHtml = `
     <div class="seat-plate" ${slot.seatAttrs||''} style="${seatPlateBgStyleAttr(slot, useAbsoluteBox)}">
       ${!useAbsoluteName ? nameInnerHtml : ''}
@@ -1322,7 +1322,7 @@ function onlineActionBubbleHtml(slot, seatNo){
 }
 
 // ---- Persönliches Tisch-Design für Online-Tische (nur lokal in diesem Browser, wirkt nur auf die eigene Ansicht) ----
-const ONLINE_DESIGN_DEFAULTS = { deck:null, felt:null, holeScale:1, boardScale:1, nameScale:1, stackScale:1 };
+const ONLINE_DESIGN_DEFAULTS = { deck:null, felt:null, holeScale:1, boardScale:1, nameScale:1, stackScale:1, holeDy: 0 };
 let onlineDesignCache = null;
 function onlineDesignKey(){ return 'chipmate_onlinedesign_' + (currentUser ? currentUser.id : 'anon'); }
 function getOnlineDesign(){
@@ -1355,6 +1355,10 @@ function openOnlineDesignModal(){
         <h2>🎨 Mein Tisch-Design</h2>
         <p class="hint">Gilt nur für deine Ansicht an Online-Tischen, in diesem Browser. Andere sehen davon nichts.</p>
         ${slider('Eigene Karten (Grösse)', 'holeScale', 60, 300)}
+        <div class="field" style="margin-bottom:12px;"><label>Eigene Karten: Position <span id="od-v-holeDy" style="font-weight:400;opacity:.7;">${d.holeDy>0?'+':''}${d.holeDy||0}</span></label>
+          <div style="display:flex;align-items:center;gap:8px;"><span style="font-size:12px;">⬆ höher</span>
+            <input type="range" min="-30" max="30" step="1" value="${d.holeDy||0}" oninput="document.getElementById('od-v-holeDy').textContent=(this.value>0?'+':'')+this.value; setOnlineDesign({holeDy: Number(this.value)})" style="flex:1;">
+            <span style="font-size:12px;">tiefer ⬇</span></div></div>
         ${slider('Community-Karten (Grösse)', 'boardScale', 60, 300)}
         ${slider('Name (Grösse)', 'nameScale', 50, 250)}
         ${slider('Stack (Grösse)', 'stackScale', 50, 250)}
