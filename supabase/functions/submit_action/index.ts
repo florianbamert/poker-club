@@ -19,7 +19,7 @@
 // SQL-Funktion ersetzt werden.
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { applyAction, resolveMultiwayShowdown, type ActionType, type HandState } from '../_shared/poker.ts';
+import { applyAction, resolveMultiwayShowdown, RANK_VALUES, type ActionType, type HandState } from '../_shared/poker.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -31,6 +31,28 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
+
+// 7-2 Game aktiv? Die Option steht in online_tables.options (falls die Spalte existiert), sonst im Club-Datenblock
+async function sevenDeuceEnabled(admin: ReturnType<typeof createClient>, tableId: string): Promise<{ on: boolean; bb: number }> {
+  let bb = 0, clubId: string | null = null, opt: any = null, haveOpt = false;
+  const r1 = await admin.from('online_tables').select('big_blind, club_id, options').eq('id', tableId).maybeSingle();
+  if (!r1.error && r1.data) { bb = Number(r1.data.big_blind); clubId = r1.data.club_id; opt = r1.data.options; haveOpt = true; }
+  else {
+    const r2 = await admin.from('online_tables').select('big_blind, club_id').eq('id', tableId).maybeSingle();
+    if (r2.data) { bb = Number(r2.data.big_blind); clubId = r2.data.club_id; }
+  }
+  if ((!haveOpt || !opt) && clubId) {
+    const cd = await admin.from('club_data').select('data').eq('club_id', clubId).maybeSingle();
+    const o = cd.data && cd.data.data && cd.data.data.onlineTableOptions ? cd.data.data.onlineTableOptions[tableId] : null;
+    if (o) opt = o;
+  }
+  return { on: !!(opt && opt.sevenDeuceGame), bb };
+}
+function isSevenDeuce(cards: string[] | undefined): boolean {
+  if (!cards || cards.length !== 2) return false;
+  const r = cards.map(c => RANK_VALUES[c.slice(0, -1)]).sort((a, b) => a - b);
+  return r[0] === 2 && r[1] === 7;
+}
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } });
@@ -134,12 +156,34 @@ Deno.serve(async (req) => {
       handFinished = true;
     }
 
+    // 7-2 Game: Gewinner mit 7-2 (Hole Cards) erhält von jedem anderen Spieler bis zu 2 BB (max. dessen Reststack)
+    let sevenDeuce: { winner_seat: number; payments: Record<string, number>; total: number } | null = null;
     if (handFinished) {
-      for (const seatNo of Object.keys(payouts)) {
-        const amt = payouts[Number(seatNo)];
-        if (amt > 0.0001) {
-          const base = newStacks[Number(seatNo)] ?? seats[Number(seatNo)].stack;
-          await admin.from('online_seats').update({ stack: base + amt }).eq('table_id', table_id).eq('seat_no', Number(seatNo));
+      const sd = await sevenDeuceEnabled(admin, table_id);
+      if (sd.on && sd.bb > 0) {
+        const winnerSeat = Object.keys(payouts).map(Number).find(s => payouts[s] > 0.0001 && isSevenDeuce(stateRow.hole_cards[String(s)]));
+        if (winnerSeat !== undefined) {
+          const payments: Record<string, number> = {};
+          for (const s of seatOrder) {
+            if (s === winnerSeat) continue;
+            const stackAfter = (newStacks[s] ?? seats[s].stack) + (payouts[s] || 0);
+            const pay = Math.min(2 * sd.bb, stackAfter);
+            if (pay > 0.0001) payments[String(s)] = Math.round(pay * 100) / 100;
+          }
+          const total = Math.round(Object.values(payments).reduce((a, b) => a + b, 0) * 100) / 100;
+          if (total > 0.0001) {
+            sevenDeuce = { winner_seat: winnerSeat, payments, total };
+            if (!revealSeats.includes(winnerSeat)) revealSeats.push(winnerSeat);   // 7-2 muss gezeigt werden, um den Bounty zu kassieren
+          }
+        }
+      }
+      for (const seatNo of seatOrder) {
+        const sn = Number(seatNo);
+        const amt = payouts[sn] || 0;
+        const delta = sevenDeuce ? (sn === sevenDeuce.winner_seat ? sevenDeuce.total : -(sevenDeuce.payments[String(sn)] || 0)) : 0;
+        if (amt > 0.0001 || Math.abs(delta) > 0.0001) {
+          const base = newStacks[sn] ?? seats[sn].stack;
+          await admin.from('online_seats').update({ stack: Math.round((base + amt + delta) * 100) / 100 }).eq('table_id', table_id).eq('seat_no', sn);
         }
       }
       // Nur die hole_cards der tatsächlich aufgedeckten Sitze (Aggressor + echte
@@ -153,7 +197,7 @@ Deno.serve(async (req) => {
           board: newState.board, revealed_hole_cards: revealedHoleCards, payouts, phase_ended: newState.phase,
           // Zusatzdaten fürs Übernehmen in die gespeicherten Hände (Replay)
           actions: actionLog, seat_order: seatOrder, dealer_seat: stateRow.dealer_seat,
-          contributions: newState.contributions,
+          contributions: newState.contributions, seven_deuce: sevenDeuce,
           start_stacks: Object.fromEntries(seatOrder.map(sn => [String(sn), (newStacks[sn] ?? seats[sn].stack) + Number((newState.contributions || {})[String(sn)] || 0)])),
           pot_total: Object.values(newState.contributions || {}).reduce((a: number, b) => a + Number(b), 0),
         },
@@ -167,7 +211,7 @@ Deno.serve(async (req) => {
           phase: 'done', board: newState.board, pot: 0, current_seat: newState.current_seat, bets: newState.bets,
           folded: newState.folded, all_in: newState.all_in,
           dealer_seat: newState.dealer_seat, hand_no: stateRow.hand_no, last_action: { seat: actingSeat, action, amount },
-          hand_over: true, payouts,
+          hand_over: true, payouts, seven_deuce: sevenDeuce,
           // Beim Showdown werden nur die aufgedeckten Hände öffentlich — kein Leck,
           // sondern dieselbe Etikette wie am echten Tisch (siehe resolveMultiwayShowdown).
           revealed_hole_cards: revealedHoleCards,

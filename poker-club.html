@@ -1096,6 +1096,12 @@ function onlineHistoryRowToHand(row, handNumber, sessionId, pidOfSeat){
   Object.keys(sm.revealed_hole_cards || {}).forEach(sn => { const p = pid(sn); if(p) holeCards[p] = sm.revealed_hole_cards[sn]; });
   const winnings = {};
   Object.keys(sm.payouts || {}).forEach(sn => { const p = pid(sn); const amt = Number(sm.payouts[sn]); if(p && amt > 0.0001) winnings[p] = amt; });
+  let sdObj = null;
+  if(sm.seven_deuce && pid(sm.seven_deuce.winner_seat)){
+    const pays = {};
+    Object.keys(sm.seven_deuce.payments || {}).forEach(sn => { const p = pid(sn); if(p) pays[p] = Number(sm.seven_deuce.payments[sn]); });
+    sdObj = { winnerId: pid(sm.seven_deuce.winner_seat), payments: pays, total: Number(sm.seven_deuce.total) };
+  }
   const contributions = {}, startStacks = {};
   Object.keys(sm.contributions || {}).forEach(sn => { const p = pid(sn); if(p) contributions[p] = Number(sm.contributions[sn]); });
   Object.keys(sm.start_stacks || {}).forEach(sn => { const p = pid(sn); if(p) startStacks[p] = Number(sm.start_stacks[sn]); });
@@ -1104,7 +1110,7 @@ function onlineHistoryRowToHand(row, handNumber, sessionId, pidOfSeat){
     dealerPlayerId: pid(sm.dealer_seat), sbPlayerId: pid(sbSeat), bbPlayerId: pid(bbSeat), seats,
     actions, board: (sm.board || []).slice(), holeCards,
     winners: Object.keys(winnings), potSize: sm.pot_total != null ? Number(sm.pot_total) : null, story: '', tags: [],
-    winnings, sevenDeuce: null, contributions, startStacks,
+    winnings, sevenDeuce: sdObj, contributions, startStacks,
     skipped:false, uncontested: sm.phase_ended !== 'showdown', allInRunout: false,
     createdAt: row.created_at || new Date().toISOString()
   };
@@ -1485,6 +1491,7 @@ function renderOnlineTableViewInner(){
         </div>` : ''}
         ${(!hs || !hs.hand_no) && seatedRows.length >= 2 && !seatedRows.every(s => s.player_id) ? `<p class="lede" style="font-size:12px;">Hinweis: Ohne verknüpften Spieler (siehe Players-Tab) kann dieser Tisch später nicht in die Statistik übernommen werden.</p>` : ''}
         ${hs && hs.hand_over && hs.payouts ? `<div class="status-banner ok" style="margin:10px 0;"><strong>${renderOnlinePayoutSummary(hs.payouts)}</strong></div>` : ''}
+        ${hs && hs.hand_over && hs.seven_deuce ? `<div class="status-banner ok" style="margin:10px 0;background:#FFF7E8;border-color:#F0DBA0;color:#8A6A0A;">🐍 7-2 Game! ${escapeHtml(onlineSeatLabel(hs.seven_deuce.winner_seat))} hat 7-2 — erhält zusätzlich ${formatMoney(hs.seven_deuce.total)}</div>` : ''}
         ${myTurn ? renderOnlineActionBar(toCall, mySeatRow ? mySeatRow.stack : 0, hs, tbl)
                  : (hs && ['preflop','flop','turn','river'].includes(phase) ? `<div style="text-align:center;color:var(--ink-soft);padding:16px 0;">Warte auf ${escapeHtml(onlineSeatLabel(hs.current_seat))}…</div>` : '')}
       </div>
