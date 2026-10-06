@@ -974,7 +974,7 @@ function onlineSound(kind, opt){
   out.connect(ac.destination);
   const t = ac.currentTime + 0.01;
   if(kind === 'fold'){            // Rauschen, abfallender Filter ("Karten werfen")
-    _noiseBurst(ac, t, 0.26, { type:'lowpass', f0:2200, f1:300, q:0.5, gain:0.12, attack:0.05, out });
+    _noiseBurst(ac, t, 0.5, { type:'bandpass', f0:3200, f1:2200, q:0.45, gain:0.06, attack:0.11, out });
   } else if(kind === 'check'){    // doppeltes Klopfen auf den Tisch
     [0, 0.1].forEach(dt => { _tone(ac, t+dt, 0.09, 190, 0.5, out, 85); _noiseBurst(ac, t+dt, 0.022, { type:'bandpass', f0:1400, q:1.2, gain:0.22, out }); });
   } else if(kind === 'call' || kind === 'raise'){
