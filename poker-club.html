@@ -1569,7 +1569,7 @@ function renderOnlineTableViewInner(){
   const currentMaxBet = hs && hs.bets ? Math.max(0, ...Object.values(hs.bets).map(Number)) : 0;
   const toCall = currentMaxBet - myBet;
   const myTurn = hs && hs.current_seat === onlineMySeat && ['preflop','flop','turn','river'].includes(phase);
-  onlineTurnSync(hs, myTurn);
+  onlineTurnSync(hs);
   const actorSeatRow = hs && ['preflop','flop','turn','river'].includes(phase) ? tbl.seats.find(s => s.seat_no === hs.current_seat) : null;
 
   // Eigenes Table-Designer-Layout statt generischer Oval-Positionen — identisch zum
@@ -1705,50 +1705,62 @@ function onlineBetGridProfile(){
   const id = onlineTableOptions(tbl).betGridId;
   return id ? ((currentClub.betGridProfiles||[]).find(p => p.id === id) || null) : null;
 }
-// ---- Timebank: 15 s pro Entscheid, einmal pro 50 Hände +45 s per Knopf ----
+// ---- Zugzeit: 15 s pro Entscheid, danach foldet der Server. Timebank +45 s, 1x pro 50 Hände und Sitz ----
+// Die Zeit läuft serverseitig (turn_deadline, siehe chipmate_online_timebank.sql); hier nur Anzeige und das
+// Melden "überfällig" — das darf jeder Sitz am Tisch, damit auch ein getrennter Spieler gefoldet wird.
 const TB_BASE_S = 15, TB_EXTRA_S = 45, TB_EVERY_HANDS = 50;
 let onlineTurn = null, onlineTurnTimer = null;
-function onlineTbKey(){ return 'chipmate_timebank_' + (currentOnlineTableId || '') + '_' + (currentUser ? currentUser.id : 'anon'); }
-function onlineTbLast(){ try{ const v = localStorage.getItem(onlineTbKey()); return v == null ? null : Number(v); }catch(e){ return null; } }
-function onlineTbHandsLeft(hs){ const l = onlineTbLast(); return l == null ? 0 : Math.max(0, TB_EVERY_HANDS - (hs.hand_no - l)); }
+function onlineMySeatRow(){ const t = onlineTables.find(x => x.id === currentOnlineTableId); return t ? t.seats.find(x => x.seat_no === onlineMySeat) : null; }
+function onlineTbHandsLeft(hs){
+  const r = onlineMySeatRow(), l = r ? r.timebank_last_hand : null;
+  return l == null ? 0 : Math.max(0, TB_EVERY_HANDS - (Number(hs.hand_no) - Number(l)));
+}
 function onlineTurnRemainingMs(){ return onlineTurn ? onlineTurn.limit - (Date.now() - onlineTurn.t0) : 0; }
-function onlineTurnSync(hs, myTurn){
-  if(!myTurn){ onlineTurn = null; if(onlineTurnTimer){ clearInterval(onlineTurnTimer); onlineTurnTimer = null; } return; }
+function onlineTurnSync(hs){
+  const active = hs && ['preflop','flop','turn','river'].includes(hs.phase) && hs.current_seat != null && !hs.hand_over && onlineMySeat != null;
+  if(!active){ onlineTurn = null; if(onlineTurnTimer){ clearInterval(onlineTurnTimer); onlineTurnTimer = null; } return; }
   const la = hs.last_action || {};
   const key = [hs.hand_no, hs.phase, hs.current_seat, la.seat, la.action, la.amount].join('|');
-  if(!onlineTurn || onlineTurn.key !== key) onlineTurn = { key, t0: Date.now(), limit: TB_BASE_S * 1000 };
+  if(!onlineTurn || onlineTurn.key !== key) onlineTurn = { key, t0: Date.now(), limit: (hs.turn_ms || TB_BASE_S * 1000), lastTry: 0 };
   if(!onlineTurnTimer) onlineTurnTimer = setInterval(onlineTurnTick, 250);
+}
+async function onlineReportTimeout(){
+  const key = onlineTurn && onlineTurn.key;
+  try{
+    const { data } = await sb.functions.invoke('submit_action', { body: { table_id: currentOnlineTableId, action: 'timeout' } });
+    if(data && data.error === 'not_expired' && onlineTurn && onlineTurn.key === key){
+      // der Spieler hat seine Timebank gezogen → Restzeit vom Server übernehmen
+      onlineTurn.limit = (Date.now() - onlineTurn.t0) + Number(data.remaining_ms || 0);
+    } else if(data && data.ok){ await refreshOnlineTableAndSeat(); }
+  }catch(e){ /* ein anderer Client war schneller o.ä. — ignorieren */ }
 }
 function onlineTurnTick(){
   const hs = onlineHandState;
-  if(!onlineTurn || !currentOnlineTableId || !hs || hs.current_seat !== onlineMySeat){
-    if(!onlineTurn || !currentOnlineTableId){ clearInterval(onlineTurnTimer); onlineTurnTimer = null; }
-    return;
-  }
+  if(!onlineTurn || !currentOnlineTableId || !hs){ if(onlineTurnTimer){ clearInterval(onlineTurnTimer); onlineTurnTimer = null; } return; }
   const rem = onlineTurnRemainingMs();
   const c = document.getElementById('tb-count'), f = document.getElementById('tb-fill');
-  if(c){ c.textContent = Math.max(0, Math.ceil(rem/1000)) + ' s'; c.style.color = rem < 5000 ? 'var(--red)' : 'inherit'; }
+  if(c){ c.textContent = Math.max(0, Math.ceil(rem/1000)) + ' s'; c.style.color = rem < 5000 ? 'var(--red)' : ''; }
   if(f){ f.style.width = Math.max(0, Math.min(100, rem / onlineTurn.limit * 100)) + '%'; f.style.background = rem < 5000 ? 'var(--red)' : 'var(--brass)'; }
-  if(rem <= 0 && !onlineBusy){
-    const myBet = hs.bets ? Number(hs.bets[String(onlineMySeat)] || 0) : 0;
-    const maxBet = hs.bets ? Math.max(0, ...Object.values(hs.bets).map(Number)) : 0;
-    onlineTurn.limit = 1e12;   // nur einmal auslösen
-    closeModal && closeModal();
-    callSubmitAction(maxBet - myBet > 0.001 ? 'fold' : 'check');
+  if(rem <= -300 && Date.now() - onlineTurn.lastTry > 2500){
+    onlineTurn.lastTry = Date.now();
+    onlineReportTimeout();
   }
 }
-function onlineUseTimebank(){
+async function onlineUseTimebank(){
   const hs = onlineHandState;
-  if(!hs || !onlineTurn || onlineTbHandsLeft(hs) > 0) return;
-  try{ localStorage.setItem(onlineTbKey(), String(hs.hand_no)); }catch(e){}
-  onlineTurn.limit += TB_EXTRA_S * 1000;
-  showToast('Timebank: +' + TB_EXTRA_S + ' s');
-  render();
+  if(!hs || !onlineTurn || onlineTbHandsLeft(hs) > 0 || hs.current_seat !== onlineMySeat) return;
+  try{
+    const { data, error } = await sb.functions.invoke('submit_action', { body: { table_id: currentOnlineTableId, action: 'timebank' } });
+    if(error || !data || data.error){ showToast('Timebank nicht verfügbar: ' + await edgeErrorText(data, error)); return; }
+    onlineTurn.limit = (Date.now() - onlineTurn.t0) + Number(data.remaining_ms || TB_EXTRA_S * 1000);
+    const r = onlineMySeatRow(); if(r) r.timebank_last_hand = hs.hand_no;
+    showToast('Timebank: +' + TB_EXTRA_S + ' s');
+    render();
+  }catch(e){ showToast('Timebank nicht verfügbar'); }
 }
 function onlineTimerHtml(hs){
   if(!onlineTurn) return '';
   const rem = onlineTurnRemainingMs();
-  const left = onlineTbHandsLeft(hs);
   return `<div style="display:flex;align-items:center;gap:10px;margin:10px 0 6px;">
       <div style="font-weight:700;font-size:16px;flex:1;">Du bist am Zug</div>
       <div id="tb-count" style="font-family:'Fraunces',serif;font-weight:700;font-size:18px;${rem < 5000 ? 'color:var(--red);' : ''}">${Math.max(0, Math.ceil(rem/1000))} s</div>

@@ -54,6 +54,10 @@ function isSevenDeuce(cards: string[] | undefined): boolean {
   return r[0] === 2 && r[1] === 7;
 }
 
+// Zugzeit: 15 s pro Entscheid (+1.5 s Netzwerk-Toleranz); Timebank: +45 s, einmal pro 50 Hände und Sitz
+const TURN_MS = 15000, GRACE_MS = 1500, TB_EXTRA_MS = 45000, TB_EVERY_HANDS = 50;
+const BETTING_PHASES = ['preflop', 'flop', 'turn', 'river'];
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } });
 }
@@ -61,8 +65,9 @@ function json(body: unknown, status = 200): Response {
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS_HEADERS });
   try {
-    const { table_id, action, amount } = await req.json() as { table_id: string; action: ActionType; amount?: number };
-    if (!table_id || !action) return json({ error: 'table_id oder action fehlt' }, 400);
+    const { table_id, action: actionIn, amount } = await req.json() as { table_id: string; action: ActionType | 'timeout' | 'timebank'; amount?: number };
+    let action = actionIn as ActionType;
+    if (!table_id || !actionIn) return json({ error: 'table_id oder action fehlt' }, 400);
 
     const authHeader = req.headers.get('Authorization') ?? '';
     const userClient = createClient(SUPABASE_URL, ANON_KEY, { global: { headers: { Authorization: authHeader } } });
@@ -81,7 +86,7 @@ Deno.serve(async (req) => {
     if (!seatsRaw || seatsRaw.length !== seatOrder.length) return json({ error: 'table_not_ready' }, 400);
     const mySeatRow = seatsRaw.find(s => s.user_id === user.id);
     if (!mySeatRow) return json({ error: 'not_seated' }, 403);
-    const actingSeat = mySeatRow.seat_no as number;
+    let actingSeat = mySeatRow.seat_no as number;
     const seats: Record<string, { seat_no: number; stack: number }> = {};
     for (const s of seatsRaw) seats[s.seat_no] = { seat_no: s.seat_no, stack: Number(s.stack) };
 
@@ -92,6 +97,35 @@ Deno.serve(async (req) => {
       contributions: stateRow.contributions || {}, last_raise_size: Number(stateRow.last_raise_size),
       last_aggressor: stateRow.last_aggressor ?? null,
     };
+
+    // Zeitkontrolle (benötigt chipmate_online_timebank.sql: Spalten turn_deadline / timebank_last_hand)
+    const hasDeadlineCol = 'turn_deadline' in stateRow;
+    if (actionIn === 'timebank') {
+      if (!hasDeadlineCol) return json({ error: 'timebank_not_supported' }, 400);
+      if (stateRow.current_seat !== actingSeat || !BETTING_PHASES.includes(stateRow.phase)) return json({ error: 'not_your_turn' }, 400);
+      const { data: tb, error: tbErr } = await admin.from('online_seats').select('timebank_last_hand').eq('table_id', table_id).eq('seat_no', actingSeat).maybeSingle();
+      if (tbErr) return json({ error: 'timebank_not_supported' }, 400);
+      const last = tb ? tb.timebank_last_hand : null;
+      if (last != null && Number(stateRow.hand_no) - Number(last) < TB_EVERY_HANDS) {
+        return json({ error: 'timebank_unavailable', hands_left: TB_EVERY_HANDS - (Number(stateRow.hand_no) - Number(last)) }, 400);
+      }
+      const curDl = stateRow.turn_deadline ? Date.parse(stateRow.turn_deadline) : Date.now();
+      const newDl = Math.max(Date.now(), curDl) + TB_EXTRA_MS;
+      await admin.from('online_seats').update({ timebank_last_hand: Number(stateRow.hand_no) }).eq('table_id', table_id).eq('seat_no', actingSeat);
+      await admin.from('online_hand_state').update({ turn_deadline: new Date(newDl).toISOString() }).eq('table_id', table_id);
+      return json({ ok: true, remaining_ms: Math.max(0, newDl - Date.now() - GRACE_MS) });
+    }
+    if (actionIn === 'timeout') {
+      // Jeder Sitz am Tisch darf melden, dass der Spieler am Zug überfällig ist — der Server prüft selbst und foldet.
+      if (!hasDeadlineCol) return json({ error: 'timeout_not_supported' }, 400);
+      if (!BETTING_PHASES.includes(stateRow.phase) || stateRow.current_seat == null) return json({ error: 'no_turn' }, 400);
+      const dl = stateRow.turn_deadline ? Date.parse(stateRow.turn_deadline) : NaN;
+      if (!isFinite(dl)) return json({ error: 'no_deadline' }, 400);
+      const rem = dl - Date.now();
+      if (rem > 0) return json({ ok: false, error: 'not_expired', remaining_ms: Math.max(0, rem - GRACE_MS) });
+      actingSeat = stateRow.current_seat as number;
+      action = 'fold';
+    }
 
     const result = applyAction(state, seats, actingSeat, action, amount);
     if (result.error) return json({ error: result.error }, 400);
@@ -122,6 +156,7 @@ Deno.serve(async (req) => {
         folded: newState.folded, all_in: newState.all_in, contributions: newState.contributions,
         last_raise_size: newState.last_raise_size, last_aggressor: newState.last_aggressor,
         ...(hasActionsCol ? { actions: actionLog } : {}),
+        ...(hasDeadlineCol ? { turn_deadline: (result.handOver || newState.phase === 'showdown') ? null : new Date(Date.now() + TURN_MS + GRACE_MS).toISOString() } : {}),
         updated_at: new Date().toISOString(),
       })
       .eq('table_id', table_id)
@@ -224,7 +259,7 @@ Deno.serve(async (req) => {
         payload: {
           phase: newState.phase, board: newState.board, pot: newState.pot, current_seat: newState.current_seat,
           bets: newState.bets, folded: newState.folded, all_in: newState.all_in, last_raise_size: newState.last_raise_size,
-          dealer_seat: newState.dealer_seat, hand_no: stateRow.hand_no, last_action: { seat: actingSeat, action, amount }, hand_over: false,
+          dealer_seat: newState.dealer_seat, hand_no: stateRow.hand_no, last_action: { seat: actingSeat, action, amount }, hand_over: false, turn_ms: TURN_MS,
         },
       });
     }

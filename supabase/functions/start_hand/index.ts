@@ -56,6 +56,8 @@ Deno.serve(async (req) => {
     if (!state) return json({ error: 'state_missing_after_deal' }, 500);
     // Aktionsprotokoll der neuen Hand leeren (Spalte "actions" existiert nur, wenn chipmate_online_hand_actions.sql gelaufen ist)
     if ('actions' in state) await admin.from('online_hand_state').update({ actions: [] }).eq('table_id', table_id);
+    // Zugzeit für den ersten Entscheid (Spalte existiert nur nach chipmate_online_timebank.sql)
+    if ('turn_deadline' in state) await admin.from('online_hand_state').update({ turn_deadline: new Date(Date.now() + 16500).toISOString() }).eq('table_id', table_id);
 
     const publicChannel = admin.channel(`table:${table_id}:public`);
     await publicChannel.send({
@@ -63,7 +65,7 @@ Deno.serve(async (req) => {
       payload: {
         phase: state.phase, board: state.board, pot: state.pot, current_seat: state.current_seat,
         dealer_seat: state.dealer_seat, bets: state.bets, hand_no: state.hand_no, seat_order: state.seat_order,
-        folded: state.folded, all_in: state.all_in, last_raise_size: state.last_raise_size,
+        folded: state.folded, all_in: state.all_in, last_raise_size: state.last_raise_size, turn_ms: 15000,
       },
     });
 
