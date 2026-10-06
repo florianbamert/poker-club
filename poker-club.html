@@ -458,6 +458,18 @@
   .action-bubble.ab-call{ background:#d6ecf7; color:#0f4a6e; }
   .action-bubble.ab-raise{ background:#ffe3c2; color:#8a3b00; }
   .action-bubble.ab-allin{ background:#e5463d; color:#fff; }
+  /* Karten-Austeilen (Hole Cards + Flop/Turn/River): nutzt die einzelnen CSS-Properties translate/rotate/scale,
+     damit die bestehenden transform-Angaben der Elemente unberührt bleiben */
+  @keyframes dealIn{ 0%{ translate:var(--dx,0cqw) var(--dy,-9cqw); rotate:-26deg; scale:.5; opacity:0; } 55%{ opacity:1; } 100%{ translate:0 0; rotate:0deg; scale:1; opacity:1; } }
+  .deal-in{ animation:dealIn .6s cubic-bezier(.2,.8,.25,1) both; animation-delay:var(--ad,0ms); }
+  .board-cards[data-from="0"] > .board-card:nth-child(1){ animation:dealIn .55s cubic-bezier(.2,.8,.25,1) both; animation-delay:calc(var(--ad,0ms) + 0ms); }
+  .board-cards[data-from="0"] > .board-card:nth-child(2){ animation:dealIn .55s cubic-bezier(.2,.8,.25,1) both; animation-delay:calc(var(--ad,0ms) + 140ms); }
+  .board-cards[data-from="0"] > .board-card:nth-child(3){ animation:dealIn .55s cubic-bezier(.2,.8,.25,1) both; animation-delay:calc(var(--ad,0ms) + 280ms); }
+  .board-cards[data-from="0"] > .board-card:nth-child(4){ animation:dealIn .55s cubic-bezier(.2,.8,.25,1) both; animation-delay:calc(var(--ad,0ms) + 420ms); }
+  .board-cards[data-from="0"] > .board-card:nth-child(5){ animation:dealIn .55s cubic-bezier(.2,.8,.25,1) both; animation-delay:calc(var(--ad,0ms) + 560ms); }
+  .board-cards[data-from="3"] > .board-card:nth-child(4){ animation:dealIn .55s cubic-bezier(.2,.8,.25,1) both; animation-delay:calc(var(--ad,0ms) + 0ms); }
+  .board-cards[data-from="3"] > .board-card:nth-child(5){ animation:dealIn .55s cubic-bezier(.2,.8,.25,1) both; animation-delay:calc(var(--ad,0ms) + 140ms); }
+  .board-cards[data-from="4"] > .board-card:nth-child(5){ animation:dealIn .55s cubic-bezier(.2,.8,.25,1) both; animation-delay:calc(var(--ad,0ms) + 0ms); }
   @keyframes abPop{
     0%{ opacity:0; transform:translate(-50%, calc(-50% - 4cqw)) scale(.3); }
     10%{ opacity:1; transform:translate(-50%, calc(-50% - 6.5cqw)) scale(1.18); }
@@ -677,6 +689,7 @@ function cleanupOnlineChannels(){
 function resetOnlineTableState(){
   cleanupOnlineChannels();
   onlineAutoKey = '';
+  onlineAnim = null;
   onlineBetBoxLabel = null; onlineBetInputVal = '';
   currentOnlineTableId = null;
   onlineMySeat = null;
@@ -908,6 +921,104 @@ let onlineActionBubbles = {};      // seatNo -> {text, kind, ts}
 let onlineStreetAggr = 0;          // wie viele Bets/Raises auf dieser Strasse schon passiert sind
 let onlineStreetKey = '';
 const ONLINE_BUBBLE_MS = 2600;
+
+/* ---------------- Tisch-Sounds (synthetisch per WebAudio, keine Dateien) + Austeil-Animation ---------------- */
+let _onlineAudio = null;
+function onlineAudioCtx(){
+  try{
+    if(!_onlineAudio){ const AC = window.AudioContext || window.webkitAudioContext; if(!AC) return null; _onlineAudio = new AC(); }
+    if(_onlineAudio.state === 'suspended') _onlineAudio.resume();
+    return _onlineAudio;
+  }catch(e){ return null; }
+}
+function _noiseBurst(ac, t, dur, o){
+  const len = Math.max(1, Math.floor(ac.sampleRate * dur));
+  const buf = ac.createBuffer(1, len, ac.sampleRate), d = buf.getChannelData(0);
+  for(let i=0;i<len;i++) d[i] = Math.random()*2 - 1;
+  const src = ac.createBufferSource(); src.buffer = buf;
+  const f = ac.createBiquadFilter(); f.type = o.type || 'bandpass';
+  f.frequency.setValueAtTime(o.f0 || 1000, t);
+  if(o.f1) f.frequency.exponentialRampToValueAtTime(o.f1, t + dur);
+  f.Q.value = o.q || 1;
+  const g = ac.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(Math.max(0.0002, o.gain || 0.3), t + (o.attack || 0.004));
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  src.connect(f); f.connect(g); g.connect(o.out); src.start(t); src.stop(t + dur + 0.02);
+}
+function _tone(ac, t, dur, freq, gain, out, endFreq){
+  const o = ac.createOscillator(), g = ac.createGain();
+  o.type = 'sine'; o.frequency.setValueAtTime(freq, t);
+  if(endFreq) o.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(gain, t + 0.003); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(out); o.start(t); o.stop(t + dur + 0.02);
+}
+function _chipClatter(ac, t, out, n){
+  for(let i=0;i<n;i++){
+    const tt = t + (i === 0 ? 0 : Math.random()*0.16 + i*0.025);
+    const fr = 2400 + Math.random()*2600;
+    _noiseBurst(ac, tt, 0.035, { type:'bandpass', f0:fr, q:7, gain:0.35, out });
+    _tone(ac, tt, 0.06, 1500 + Math.random()*1300, 0.07, out);
+  }
+}
+function onlineSound(kind, opt){
+  const d = getOnlineDesign();
+  if(d.sound === false) return;
+  const ac = onlineAudioCtx(); if(!ac) return;
+  const out = ac.createGain(); out.gain.value = Math.max(0, Math.min(1, d.vol != null ? d.vol : 0.6));
+  out.connect(ac.destination);
+  const t = ac.currentTime + 0.01;
+  if(kind === 'fold'){            // Rauschen, abfallender Filter ("Karten werfen")
+    _noiseBurst(ac, t, 0.38, { type:'lowpass', f0:4200, f1:380, q:0.7, gain:0.34, attack:0.03, out });
+  } else if(kind === 'check'){    // doppeltes Klopfen auf den Tisch
+    [0, 0.1].forEach(dt => { _tone(ac, t+dt, 0.09, 190, 0.5, out, 85); _noiseBurst(ac, t+dt, 0.022, { type:'bandpass', f0:1400, q:1.2, gain:0.22, out }); });
+  } else if(kind === 'call' || kind === 'raise'){
+    _chipClatter(ac, t, out, kind === 'raise' ? 6 : 4);
+  } else if(kind === 'allin'){
+    _chipClatter(ac, t, out, 10); _tone(ac, t, 0.25, 120, 0.4, out, 60);
+  } else if(kind === 'win'){
+    _chipClatter(ac, t, out, 8);
+  } else if(kind === 'deal'){     // Karten-Swish, mehrfach gestaffelt
+    const n = Math.max(1, Math.min(8, (opt && opt.n) || 1));
+    for(let i=0;i<n;i++) _noiseBurst(ac, t + i*0.11, 0.08, { type:'highpass', f0:2600, f1:6500, q:0.8, gain:0.22, attack:0.012, out });
+  }
+}
+
+let onlineAnim = null;
+// Erkennt Übergänge (neue Hand, neue Board-Karten) und merkt sich den Startzeitpunkt der Animation. Die
+// Animationen laufen per negativer animation-delay weiter, auch wenn render() das DOM neu aufbaut.
+function onlineAnimUpdate(hs, seatedCount){
+  if(!hs) return;
+  const now = Date.now(), bl = (hs.board || []).length;
+  if(!onlineAnim){
+    onlineAnim = { handNo: hs.hand_no, boardLen: bl, holeT0: 0, boardFrom: null, boardT0: 0, doneHand: hs.phase === 'done' ? hs.hand_no : null };
+    // erstes Laden / Neuladen mitten in der Hand: nicht animieren — ausser es ist die allererste Hand am Tisch
+    if(hs.hand_no <= 1 && hs.phase === 'preflop' && bl === 0){ onlineAnim.holeT0 = now; onlineSound('deal', { n: Math.min(8, (seatedCount || 2) * 2) }); }
+    return;
+  }
+  if(hs.hand_no !== onlineAnim.handNo){
+    onlineAnim.handNo = hs.hand_no; onlineAnim.boardLen = bl; onlineAnim.boardFrom = null;
+    if(['preflop','flop','turn','river'].includes(hs.phase)){ onlineAnim.holeT0 = now; onlineSound('deal', { n: Math.min(8, (seatedCount || 2) * 2) }); }
+  } else if(bl > onlineAnim.boardLen){
+    onlineAnim.boardFrom = onlineAnim.boardLen; onlineAnim.boardT0 = now;
+    onlineSound('deal', { n: bl - onlineAnim.boardLen >= 3 ? 3 : 1 });
+    onlineAnim.boardLen = bl;
+  }
+  if(hs.hand_over && onlineAnim.doneHand !== hs.hand_no){ onlineAnim.doneHand = hs.hand_no; onlineSound('win'); }
+}
+function onlineHoleAnimAttrs(slot, seatNo){
+  if(!onlineAnim || !onlineAnim.holeT0) return { cls:'', style:'' };
+  const delay = seatNo * 90, el = Date.now() - onlineAnim.holeT0;
+  if(el > delay + 900) return { cls:'', style:'' };
+  return { cls:' deal-in', style:`--dx:calc(${(50 - (slot.holeCardsX||50)).toFixed(1)} * 1cqw);--dy:calc(${(50 - (slot.holeCardsY||50)).toFixed(1)} * .55cqw);--ad:${delay - el}ms;` };
+}
+function onlineBoardAnimAttr(){
+  if(!onlineAnim || onlineAnim.boardFrom == null) return '';
+  const el = Date.now() - onlineAnim.boardT0;
+  if(el > 1500) return '';
+  const from = onlineAnim.boardFrom <= 0 ? 0 : (onlineAnim.boardFrom <= 3 ? 3 : 4);
+  return ` data-from="${from}" style="--ad:${-el}ms;"`;
+}
 function onlineBubbleFromState(st){
   if(!st) return;
   const key = `${st.hand_no}|${st.phase}`;
@@ -937,6 +1048,7 @@ function onlineBubbleFromState(st){
   } else { return; }
   if(wasAllIn && la.action !== 'fold'){ text = 'All-in'; kind = 'allin'; }
   onlineActionBubbles[la.seat] = { text, kind, ts: Date.now() };
+  onlineSound(kind === 'raise' ? 'raise' : kind);
   setTimeout(() => { if(currentOnlineTableId) render(); }, ONLINE_BUBBLE_MS + 80);
 }
 
@@ -1295,7 +1407,8 @@ function onlinePokerSeatHtml(slot, seatRow, seatNo, hs, isMe){
   // Vertikaler Anker wie bei renderHandFlowUI: im Showdown dürfen die aufgedeckten
   // Karten komplett sichtbar sein (-55%), sonst wachsen sie überwiegend nach unten (-20%).
   const holeCardsVAnchor = (phase === 'showdown' || phase === 'done') ? -55 : -20;
-  const standaloneHoleCardsHtml = (!folded && cardsHtml) ? `<div class="seat-holecards${slot.holeCardsCompact?' compact':''}" style="position:absolute;left:${slot.holeCardsX}%;top:${slot.holeCardsY + ((onlineDesignActive && onlineDesignActive.holeDy) || 0)}%;transform:translate(-50%,${holeCardsVAnchor}%) scale(${slot.holeCardsScale});z-index:${slot.zHoleCards!=null?slot.zHoleCards:3};">${cardsHtml}</div>` : '';
+  const holeAnim = onlineHoleAnimAttrs(slot, seatNo);
+  const standaloneHoleCardsHtml = (!folded && cardsHtml) ? `<div class="seat-holecards${slot.holeCardsCompact?' compact':''}${holeAnim.cls}" style="${holeAnim.style}position:absolute;left:${slot.holeCardsX}%;top:${slot.holeCardsY + ((onlineDesignActive && onlineDesignActive.holeDy) || 0)}%;transform:translate(-50%,${holeCardsVAnchor}%) scale(${slot.holeCardsScale});z-index:${slot.zHoleCards!=null?slot.zHoleCards:3};">${cardsHtml}</div>` : '';
   const platePlateHtml = `
     <div class="seat-plate" ${slot.seatAttrs||''} style="${seatPlateBgStyleAttr(slot, useAbsoluteBox)}">
       ${!useAbsoluteName ? nameInnerHtml : ''}
@@ -1322,7 +1435,7 @@ function onlineActionBubbleHtml(slot, seatNo){
 }
 
 // ---- Persönliches Tisch-Design für Online-Tische (nur lokal in diesem Browser, wirkt nur auf die eigene Ansicht) ----
-const ONLINE_DESIGN_DEFAULTS = { deck:null, felt:null, holeScale:1, boardScale:1, nameScale:1, stackScale:1, holeDy: 0 };
+const ONLINE_DESIGN_DEFAULTS = { deck:null, felt:null, holeScale:1, boardScale:1, nameScale:1, stackScale:1, holeDy: 0, sound:true, vol:0.6 };
 let onlineDesignCache = null;
 function onlineDesignKey(){ return 'chipmate_onlinedesign_' + (currentUser ? currentUser.id : 'anon'); }
 function getOnlineDesign(){
@@ -1359,6 +1472,10 @@ function openOnlineDesignModal(){
           <div style="display:flex;align-items:center;gap:8px;"><span style="font-size:12px;">⬆ höher</span>
             <input type="range" min="-30" max="30" step="1" value="${d.holeDy||0}" oninput="document.getElementById('od-v-holeDy').textContent=(this.value>0?'+':'')+this.value; setOnlineDesign({holeDy: Number(this.value)})" style="flex:1;">
             <span style="font-size:12px;">tiefer ⬇</span></div></div>
+        <div class="field" style="margin-bottom:12px;">
+          <label style="display:flex;align-items:center;gap:8px;font-weight:400;"><input type="checkbox" ${d.sound!==false?'checked':''} onchange="setOnlineDesign({sound:this.checked}, false); if(this.checked) onlineSound('call')" style="width:16px;height:16px;"> 🔊 Tisch-Sounds (Chips, Check, Fold, Karten)</label>
+          <input type="range" min="0" max="100" step="5" value="${Math.round((d.vol!=null?d.vol:0.6)*100)}" oninput="setOnlineDesign({vol: this.value/100}, false)" onchange="onlineSound('raise')" style="width:100%;margin-top:6px;" title="Lautstärke">
+        </div>
         ${slider('Community-Karten (Grösse)', 'boardScale', 60, 300)}
         ${slider('Name (Grösse)', 'nameScale', 50, 250)}
         ${slider('Stack (Grösse)', 'stackScale', 50, 250)}
@@ -1408,6 +1525,7 @@ function renderOnlineTableViewInner(){
   const hs = onlineHandState;
   const phase = hs ? hs.phase : 'waiting';
   const seatCount = tbl.seat_count || 2;
+  onlineAnimUpdate(hs, tbl.seats.filter(x => x.user_id).length);
   const seatedRows = tbl.seats.filter(s => s.user_id);
   const mySeatRow = tbl.seats.find(s => s.seat_no === onlineMySeat);
   const isFinished = tbl.status === 'finished';
@@ -1469,7 +1587,7 @@ function renderOnlineTableViewInner(){
             ${chosenLayout && !chosenLayout.bettingLineHidden ? bettingLineOverlayHtml(chosenLayout) : ''}
             ${seatsHtml}
             <div class="board-center" style="${chosenLayout && chosenLayout.boardX!=null && chosenLayout.boardY!=null ? `left:${chosenLayout.boardX}%;top:${chosenLayout.boardY}%;transform:translate(-50%,-50%);` : ''}">
-              ${hs && hs.board && hs.board.length ? `<div class="board-cards">${hs.board.map(cardChipHtml).join('')}</div>` : ''}
+              ${hs && hs.board && hs.board.length ? `<div class="board-cards"${onlineBoardAnimAttr()}>${hs.board.map(cardChipHtml).join('')}</div>` : ''}
             </div>
             <div class="pot-center" style="${chosenLayout && chosenLayout.potX!=null && chosenLayout.potY!=null ? `left:${chosenLayout.potX}%;top:${chosenLayout.potY}%;transform:translate(-50%,-50%);` : ''}">
               <div class="amt">${fmtChipPlain(hs ? hs.pot : 0)}</div>
