@@ -12561,7 +12561,7 @@ function handleCardSheetUpload(input){
         rect: { left:0, top:0, right:100, bottom:100 },
         rows: 4,
         cols: 13,
-        gapX: 0, gapY: 0, margin: 0, zoom: 1,
+        gapX: 0, gapY: 0, marginX: 0, marginY: 0, zoom: 1,
         dragging: null,
         step: 1,
         cellImages: null,
@@ -12587,8 +12587,8 @@ function sheetImportDisplaySize(){
 // (px). Kartengrösse = (Blockgrösse − Abstände) / Anzahl. Pro Karte zwei gelbe Linien (linke/rechte bzw.
 // obere/untere Kante) → vor der ersten Karte eine, zwischen Karten zwei, nach der letzten eine.
 function sheetBlockPx(s){
-  const x0 = s.rect.left/100*s.naturalW + s.margin, y0 = s.rect.top/100*s.naturalH + s.margin;
-  const x1 = s.rect.right/100*s.naturalW - s.margin, y1 = s.rect.bottom/100*s.naturalH - s.margin;
+  const x0 = s.rect.left/100*s.naturalW + s.marginX, y0 = s.rect.top/100*s.naturalH + s.marginY;
+  const x1 = s.rect.right/100*s.naturalW - s.marginX, y1 = s.rect.bottom/100*s.naturalH - s.marginY;
   const bw = Math.max(1, x1 - x0), bh = Math.max(1, y1 - y0);
   const cw = (bw - (s.cols-1)*s.gapX)/s.cols, ch = (bh - (s.rows-1)*s.gapY)/s.rows;
   return { x0, y0, x1, y1, bw, bh, cw, ch };
@@ -12606,7 +12606,7 @@ function openSheetImportOverlay(){
   if(!s) return;
   const { dispW, dispH } = sheetImportDisplaySize();
   const maxGapX = Math.max(5, Math.round(s.naturalW/s.cols/2)), maxGapY = Math.max(5, Math.round(s.naturalH/s.rows/2));
-  const maxMargin = Math.round(Math.min(s.naturalW, s.naturalH)/10);
+  const maxMarginX = Math.round(s.naturalW/10), maxMarginY = Math.round(s.naturalH/10);
   const sliderRow = (label, id, val, max, unit, handler) => `<label style="display:flex;align-items:center;gap:6px;">${label} <input type="range" min="0" max="${max}" step="0.25" id="${id}" value="${val}" style="width:150px;" oninput="${handler}('${id}',false)"> <input type="number" min="0" max="${max}" step="0.25" id="${id}-n" value="${val}" style="width:70px;" oninput="${handler}('${id}',true)">${unit}</label>`;
   const overlay = document.createElement('div');
   overlay.id = 'sheet-import-overlay';
@@ -12626,7 +12626,8 @@ function openSheetImportOverlay(){
         <div style="display:flex;flex-wrap:wrap;gap:8px 20px;">
           ${sliderRow('Abstand seitlich ↔','sheet-gapX',s.gapX,maxGapX,' px','onSheetSlider')}
           ${sliderRow('Abstand oben/unten ↕','sheet-gapY',s.gapY,maxGapY,' px','onSheetSlider')}
-          ${sliderRow('Innenrand','sheet-margin',s.margin,maxMargin,' px','onSheetSlider')}
+          ${sliderRow('Rahmen → 1. Linie seitlich ↔','sheet-marginX',s.marginX,maxMarginX,' px','onSheetSlider')}
+          ${sliderRow('Rahmen → 1. Linie oben/unten ↕','sheet-marginY',s.marginY,maxMarginY,' px','onSheetSlider')}
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;">
           <span class="lede" style="margin:0;font-weight:700;">Rahmen (%):</span>
@@ -12712,7 +12713,7 @@ function onSheetSlider(id, fromNumber){
   const sl = document.getElementById(id), nm = document.getElementById(id+'-n');
   const v = Math.max(0, Number((fromNumber ? nm : sl).value) || 0);
   if(fromNumber){ sl.value = v; } else { nm.value = v; }
-  if(id === 'sheet-gapX') s.gapX = v; else if(id === 'sheet-gapY') s.gapY = v; else if(id === 'sheet-margin') s.margin = v;
+  if(id === 'sheet-gapX') s.gapX = v; else if(id === 'sheet-gapY') s.gapY = v; else if(id === 'sheet-marginX') s.marginX = v; else if(id === 'sheet-marginY') s.marginY = v;
   renderSheetOverlayVisuals();
 }
 function updateSheetRectFromInputs(){
