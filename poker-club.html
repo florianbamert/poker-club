@@ -1411,7 +1411,7 @@ function onlinePokerSeatHtml(slot, seatRow, seatNo, hs, isMe){
   const useAbsoluteBox = slot.boxX != null && slot.boxY != null;
   const useAbsoluteName = slot.nameX != null && slot.nameY != null;
   const useAbsoluteStack = slot.stackX != null && slot.stackY != null;
-  const textColor = slot.textColor || tableSettings.nameColor;
+  const textColor = slot.textColor || SEAT_PLATE_TEXT;   // Sitzbox ist hell (Creme) — Schrift hängt NICHT vom Theme ab
 
   if(!seatRow || !seatRow.user_id){
     const nameInnerHtml = `<div class="seat-name" style="color:${textColor};transform:scale(${slot.nameScale});transform-origin:center;">Frei</div>`;
@@ -8026,6 +8026,7 @@ function unlockBarInlineHtml(s){
 }
 
 let handFlow = null;
+const SEAT_PLATE_TEXT = '#2A1D0F';   // Standard-Schriftfarbe auf der hellen Sitzbox, unabhängig von Dark-Themes
 let tableSettings = { felt:'#1B4332', deck:'2color', posColor:'#D97757', nameColor:'#FFFFFF', chipAssetId:null, activeLayoutId:null };
 function hexToRgbParts(hex){
   hex = hex.replace('#','');
@@ -8323,7 +8324,7 @@ function getSeatSlotsForRender(seatCount, sessionId, layoutOverride){
     holeCardsX: p.left, holeCardsY: p.top-30, holeCardsScale:1,
     posTagX: p.left, posTagY: p.top-38, posTagRotation:0, posTagScale:1,
     zAvatar:2, zHoleCards:3, zBox:4,
-    boxImage:null, boxHidden:false, avatarOnTop:true, textColor:tableSettings.nameColor
+    boxImage:null, boxHidden:false, avatarOnTop:true, textColor:SEAT_PLATE_TEXT
   }));
 }
 function avatarSeatStyleAttr(scale, zIndex){
