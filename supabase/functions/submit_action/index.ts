@@ -282,7 +282,7 @@ Deno.serve(async (req) => {
         payload: {
           phase: 'done', board: newState.board, pot: 0, current_seat: newState.current_seat, bets: newState.bets,
           folded: newState.folded, all_in: newState.all_in,
-          dealer_seat: newState.dealer_seat, hand_no: stateRow.hand_no, last_action: { seat: actingSeat, action, amount },
+          dealer_seat: newState.dealer_seat, hand_no: stateRow.hand_no, actions: actionLog, last_action: { seat: actingSeat, action, amount },
           hand_over: true, payouts, seven_deuce: sevenDeuce,
           // Beim Showdown werden nur die aufgedeckten Hände öffentlich — kein Leck,
           // sondern dieselbe Etikette wie am echten Tisch (siehe resolveMultiwayShowdown).
@@ -296,7 +296,7 @@ Deno.serve(async (req) => {
         payload: {
           phase: newState.phase, board: newState.board, pot: newState.pot, current_seat: newState.current_seat,
           bets: newState.bets, folded: newState.folded, all_in: newState.all_in, last_raise_size: newState.last_raise_size,
-          dealer_seat: newState.dealer_seat, hand_no: stateRow.hand_no, last_action: { seat: actingSeat, action, amount }, hand_over: false, turn_ms: nextSitOut ? 0 : TURN_MS,
+          dealer_seat: newState.dealer_seat, hand_no: stateRow.hand_no, actions: actionLog, last_action: { seat: actingSeat, action, amount }, hand_over: false, turn_ms: nextSitOut ? 0 : TURN_MS,
         },
       });
     }
