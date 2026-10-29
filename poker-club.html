@@ -1121,7 +1121,7 @@ function onlineHandLogHtml(hs){
     });
   });
   if(hs && hs.hand_over){
-    const shown = Object.keys(hs.hole_cards || {}).filter(sn => (hs.hole_cards[sn] || []).length === 2);
+    const shown = Object.keys(hs.hole_cards || {}).filter(sn => (hs.hole_cards[sn] || []).length >= 1);
     if(shown.length) html += `<div class="hand-log-street">Showdown</div>` + shown.map(sn => `<div class="hand-log-entry"><span class="who">${onlineSeatLabel(Number(sn))}</span><span class="act">${hs.hole_cards[sn].map(cardChipHtml).join(' ')}</span></div>`).join('');
     if(hs.payouts) html += `<div class="hand-log-street">Ergebnis</div>` + Object.keys(hs.payouts).filter(sn => hs.payouts[sn] > 0.0001).map(sn => { const net = onlineNetOf(hs, sn); return `<div class="hand-log-entry"><span class="who">🏆 ${onlineSeatLabel(Number(sn))}</span><span class="act win">Winner · Pot ${formatMoney(hs.payouts[sn])}${net != null ? ' (netto ' + (net >= 0 ? '+' : '') + formatMoney(net) + ')' : ''}</span></div>`; }).join('');
   }
@@ -1435,7 +1435,7 @@ function onlineHistoryRowToHand(row, handNumber, sessionId, pidOfSeat){
     }
   });
   const holeCards = {};
-  Object.keys(sm.revealed_hole_cards || {}).forEach(sn => { const p = pid(sn); if(p) holeCards[p] = sm.revealed_hole_cards[sn]; });
+  Object.keys(sm.revealed_hole_cards || {}).forEach(sn => { const p = pid(sn); if(p && (sm.revealed_hole_cards[sn] || []).length === 2) holeCards[p] = sm.revealed_hole_cards[sn]; });
   const winnings = {};
   Object.keys(sm.payouts || {}).forEach(sn => { const p = pid(sn); const amt = Number(sm.payouts[sn]); if(p && amt > 0.0001) winnings[p] = amt; });
   let sdObj = null;
@@ -1649,7 +1649,7 @@ function onlinePokerSeatHtml(slot, seatRow, seatNo, hs, isMe){
   } else if(isMe && onlineMyHoleCards){
     cardsHtml = onlineMyHoleCards.map(cardChipHtml).join('');
   } else if(hs && hs.hole_cards && hs.hole_cards[String(seatNo)]){
-    cardsHtml = hs.hole_cards[String(seatNo)].map(cardChipHtml).join('');
+    cardsHtml = hs.hole_cards[String(seatNo)].map(cardChipHtml).join('') + (hs.hole_cards[String(seatNo)].length === 1 ? blankCardHtml() : '');
   } else if(!isMe){
     cardsHtml = blankCardHtml() + blankCardHtml();
   }
@@ -1896,17 +1896,17 @@ function onlineWinBoxHtml(hs){
       <div class="w-line">Pot-Anteil <strong>${formatMoney(hs.payouts[sn])}</strong>${net != null ? ` · netto in dieser Hand <strong style="color:${net >= 0 ? '#1E7B34' : '#A33'};">${net >= 0 ? '+' : ''}${formatMoney(net)}</strong>` : ''}</div></div>`;
   }).join('');
   const iAmWinner = onlineMySeat != null && Number(hs.payouts[String(onlineMySeat)] || 0) > 0.0001;
-  const canShow = hs.uncontested && iAmWinner && onlineMuckedHand !== hs.hand_no && !(hs.hole_cards && hs.hole_cards[String(onlineMySeat)]);
-  const shown = hs.uncontested && hs.hole_cards && winners.some(sn => (hs.hole_cards[sn] || []).length === 2);
+  const canShow = hs.uncontested && iAmWinner && onlineMuckedHand !== hs.hand_no && !(hs.hole_cards && (hs.hole_cards[String(onlineMySeat)] || []).length >= 2);
+  const shown = hs.uncontested && hs.hole_cards && winners.some(sn => (hs.hole_cards[sn] || []).length >= 1);
   return `<div class="win-box"><div style="font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--ink-soft);">Winner · ${how}</div>${rows}
-    ${canShow ? `<div style="display:flex;gap:8px;margin-top:10px;"><button class="btn btn-secondary btn-sm" onclick="onlineShowCards()">Karten zeigen</button><button class="btn btn-secondary btn-sm" onclick="onlineMuckCards()">Nicht zeigen</button><span style="font-size:12px;color:var(--ink-soft);align-self:center;">nach 5 s automatisch verdeckt</span></div>` : ''}
+    ${canShow ? `<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;"><button class="btn btn-secondary btn-sm" onclick="onlineShowCards()">Beide zeigen</button>${(onlineMyHoleCards || []).map((c, i) => `<button class="btn btn-secondary btn-sm" onclick="onlineShowCards(${i})">${cardChipHtml(c)} zeigen</button>`).join('')}<button class="btn btn-secondary btn-sm" onclick="onlineMuckCards()">Nicht zeigen</button><span style="font-size:12px;color:var(--ink-soft);align-self:center;">nach 5 s automatisch verdeckt</span></div>` : ''}
     ${shown ? `<div style="font-size:12px;color:var(--ink-soft);margin-top:6px;">Hat die Karten gezeigt.</div>` : ''}</div>`;
 }
 let onlineMuckedHand = null;
 function onlineMuckCards(){ onlineMuckedHand = onlineHandState ? onlineHandState.hand_no : null; render(); }
-async function onlineShowCards(){
+async function onlineShowCards(idx){
   try{
-    const { data, error } = await sb.functions.invoke('submit_action', { body: { table_id: currentOnlineTableId, action: 'showcards' } });
+    const { data, error } = await sb.functions.invoke('submit_action', { body: { table_id: currentOnlineTableId, action: 'showcards', card_index: (idx === 0 || idx === 1) ? idx : null } });
     if(error || (data && data.error)){ showToast('Karten zeigen nicht möglich: ' + await edgeErrorText(data, error)); return; }
   }catch(e){ showToast('Karten zeigen nicht möglich.'); }
 }

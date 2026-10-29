@@ -65,7 +65,7 @@ function json(body: unknown, status = 200): Response {
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS_HEADERS });
   try {
-    const { table_id, action: actionIn, amount } = await req.json() as { table_id: string; action: ActionType | 'timeout' | 'timebank' | 'sitback' | 'showcards'; amount?: number };
+    const { table_id, action: actionIn, amount, card_index } = await req.json() as { card_index?: number | null; table_id: string; action: ActionType | 'timeout' | 'timebank' | 'sitback' | 'showcards'; amount?: number };
     let action = actionIn as ActionType;
     if (!table_id || !actionIn) return json({ error: 'table_id oder action fehlt' }, 400);
 
@@ -114,10 +114,13 @@ Deno.serve(async (req) => {
       const sm = hh.summary as Record<string, any>;
       if (!(Number((sm.payouts || {})[String(actingSeat)] || 0) > 0)) return json({ error: 'not_winner' }, 400);
       const revealed: Record<string, string[]> = { ...(sm.revealed_hole_cards || {}) };
-      if (revealed[String(actingSeat)]) return json({ ok: true });
       const mine = stateRow.hole_cards ? stateRow.hole_cards[String(actingSeat)] : null;
       if (!mine) return json({ error: 'no_cards' }, 400);
-      revealed[String(actingSeat)] = mine;
+      const already: string[] = revealed[String(actingSeat)] || [];
+      // card_index 0/1 = nur diese Karte zeigen (bereits gezeigte bleiben sichtbar), sonst beide
+      const shownCards = (mine as string[]).filter((c, i) => already.includes(c) || card_index == null || card_index === i);
+      if (shownCards.length === already.length) return json({ ok: true });
+      revealed[String(actingSeat)] = shownCards;
       await admin.from('online_hand_history').update({ summary: { ...sm, revealed_hole_cards: revealed } }).eq('id', hh.id);
       await admin.from('online_hand_state').update({ revealed_hole_cards: revealed }).eq('table_id', table_id);
       const ch = admin.channel(`table:${table_id}:public`);
