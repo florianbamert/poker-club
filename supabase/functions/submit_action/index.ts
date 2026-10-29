@@ -89,11 +89,12 @@ Deno.serve(async (req) => {
     const seatOrder: number[] = stateRow.seat_order || [];
     if (seatOrder.length < 2) return json({ error: 'table_not_ready' }, 400);
 
-    const { data: seatsRaw } = await admin.from('online_seats').select('seat_no, user_id, stack').eq('table_id', table_id).in('seat_no', seatOrder);
+    const { data: seatsRaw } = await admin.from('online_seats').select('seat_no, user_id, player_id, stack').eq('table_id', table_id).in('seat_no', seatOrder);
     if (!seatsRaw || seatsRaw.length !== seatOrder.length) return json({ error: 'table_not_ready' }, 400);
     const mySeatRow = seatsRaw.find(s => s.user_id === user.id);
     if (!mySeatRow) return json({ error: 'not_seated' }, 403);
     let actingSeat = mySeatRow.seat_no as number;
+    const seatPlayers: Record<string, string | null> = Object.fromEntries(seatsRaw.map(r => [String(r.seat_no), (r as any).player_id ?? null]));
     const seats: Record<string, { seat_no: number; stack: number }> = {};
     for (const s of seatsRaw) seats[s.seat_no] = { seat_no: s.seat_no, stack: Number(s.stack) };
 
@@ -267,7 +268,7 @@ Deno.serve(async (req) => {
         summary: {
           board: newState.board, revealed_hole_cards: revealedHoleCards, payouts, phase_ended: newState.phase,
           // Zusatzdaten fürs Übernehmen in die gespeicherten Hände (Replay)
-          actions: actionLog, seat_order: seatOrder, dealer_seat: stateRow.dealer_seat,
+          actions: actionLog, seat_players: seatPlayers, seat_order: seatOrder, dealer_seat: stateRow.dealer_seat,
           contributions: newState.contributions, seven_deuce: sevenDeuce, chips_before: chipsBefore, chips_after: chipsAfter,
           start_stacks: Object.fromEntries(seatOrder.map(sn => [String(sn), (newStacks[sn] ?? seats[sn].stack) + Number((newState.contributions || {})[String(sn)] || 0)])),
           pot_total: Object.values(newState.contributions || {}).reduce((a: number, b) => a + Number(b), 0),

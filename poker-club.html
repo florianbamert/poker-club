@@ -1164,6 +1164,11 @@ async function takeOnlineSeat(seatNo){
     alert('Dein Login ist noch keinem Spieler aus eurer Liste zugeordnet. Nur ein Club-Admin kann das verknüpfen (Players-Tab → Spieler bearbeiten → "Verknüpfter Login"). Damit stellen wir sicher, dass niemand für einen anderen Spieler mitspielen kann.');
     return;
   }
+  const tblNow = onlineTables.find(x => x.id === currentOnlineTableId);
+  if(tblNow && tblNow.seats.some(x => x.user_id && (x.user_id === currentUser.id || x.player_id === player.id))){
+    showToast(fullName(player) + ' sitzt bereits an diesem Tisch.');
+    return;
+  }
   const buyin = prompt(`Buy-in für ${fullName(player)} (Startstack)?`, '100');
   if(buyin == null) return;
   const amount = parseFloat(buyin);
@@ -1205,20 +1210,23 @@ function deriveOnlineLedger(hist){
   (hist || []).forEach(row => {
     const sm = row.summary || {};
     const order = Array.isArray(sm.seat_order) ? sm.seat_order : [];
+    const sp = sm.seat_players || {};
     const sd = sm.seven_deuce;
     order.forEach(sn => {
-      const k = String(sn);
-      const start = Number((sm.start_stacks || {})[k]);
+      const k0 = String(sn);
+      const pid = sp[k0] || '';
+      const k = k0 + '|' + pid;
+      const start = Number((sm.start_stacks || {})[k0]);
       if(!isFinite(start)) return;
-      const contrib = Number((sm.contributions || {})[k] || 0);
-      const pay = Number((sm.payouts || {})[k] || 0);
+      const contrib = Number((sm.contributions || {})[k0] || 0);
+      const pay = Number((sm.payouts || {})[k0] || 0);
       let delta = 0;
-      if(sd) delta = (Number(sn) === Number(sd.winner_seat)) ? Number(sd.total || 0) : -Number((sd.payments || {})[k] || 0);
+      if(sd) delta = (Number(sn) === Number(sd.winner_seat)) ? Number(sd.total || 0) : -Number((sd.payments || {})[k0] || 0);
       const end = Math.round((start - contrib + pay + delta) * 100) / 100;
       const cur = per[k];
-      if(!cur) per[k] = { seat: Number(sn), buyin: Math.round(start * 100) / 100, final: end, hands: 1 };
+      if(!cur) per[k] = { key: k, seat: Number(sn), playerId: pid, buyin: Math.round(start * 100) / 100, final: end, hands: 1 };
       else {
-        if(start > cur.final + 0.005) cur.buyin = Math.round((cur.buyin + (start - cur.final)) * 100) / 100;   // Nachkauf / Wiedereinstieg
+        if(start > cur.final + 0.005) cur.buyin = Math.round((cur.buyin + (start - cur.final)) * 100) / 100;   // Nachkauf
         cur.final = end; cur.hands++;
       }
     });
@@ -1232,21 +1240,28 @@ async function closeOnlineTable(){
   if(!isClubAdmin()){ showToast('Nur ein Club-Admin darf den Tisch schliessen.'); return; }
   const { data: hist, error } = await sb.from('online_hand_history').select('*').eq('table_id', currentOnlineTableId).order('hand_no', { ascending: true });
   if(error){ showToast('Hände konnten nicht geladen werden: ' + error.message); return; }
-  const derived = deriveOnlineLedger(hist);
-  const seatNos = new Set(Object.keys(derived).map(Number));
-  tbl.seats.filter(x => x.user_id).forEach(x => seatNos.add(x.seat_no));
-  if(!seatNos.size){ showToast('Am Tisch wurde noch nichts gespielt.'); return; }
-  const rows = [...seatNos].sort((x, y) => x - y).map(sn => {
-    const live = tbl.seats.find(x => x.seat_no === sn && x.user_id);
-    const d = derived[String(sn)];
-    return {
-      seat: sn, live: !!live,
-      playerId: live ? (live.player_id || '') : '',
-      buyin: live ? Number(live.buyin_total || 0) : (d ? d.buyin : 0),
-      final: live ? Number(live.stack || 0) : (d ? d.final : 0),
-      hands: d ? d.hands : 0
-    };
+  const derived = Object.values(deriveOnlineLedger(hist));
+  const rows = [];
+  const liveSeats = tbl.seats.filter(x => x.user_id);
+  const usedLive = new Set();
+  derived.forEach(d => {
+    // zugehörige Live-Zeile: gleicher Sitz und (gleicher Spieler, oder bei alten Händen ohne Spielerangabe: gleicher Endstand)
+    const live = liveSeats.find(x => x.seat_no === d.seat && !usedLive.has(x.seat_no) &&
+      (d.playerId ? x.player_id === d.playerId : Math.abs(Number(x.stack || 0) - d.final) < 0.01));
+    if(live){
+      usedLive.add(live.seat_no);
+      rows.push({ seat: d.seat, live: true, histSeat: true, playerId: live.player_id || d.playerId || '', buyin: Number(live.buyin_total || 0), final: Number(live.stack || 0), hands: d.hands });
+    } else {
+      rows.push({ seat: d.seat, live: false, histSeat: true, playerId: d.playerId || '', buyin: d.buyin, final: d.final, hands: d.hands });
+    }
   });
+  liveSeats.forEach(x => {
+    if(usedLive.has(x.seat_no)) return;
+    rows.push({ seat: x.seat_no, live: true, histSeat: false, playerId: x.player_id || '', buyin: Number(x.buyin_total || 0), final: Number(x.stack || 0), hands: 0 });
+  });
+  if(!rows.length){ showToast('Am Tisch wurde noch nichts gespielt.'); return; }
+  rows.sort((x, y) => x.seat - y.seat);
+  rows.forEach((r, i) => r.idx = i);
   onlineClosePlan = { rows, hist: hist || [] };
   openOnlineCloseModal();
 }
@@ -1264,9 +1279,9 @@ function openOnlineCloseModal(){
         ${plan.rows.map(r => `
         <div style="display:grid;grid-template-columns:54px 1fr 84px 84px;gap:6px;align-items:center;margin-top:6px;">
           <div style="font-weight:700;">${r.seat + 1}${r.live ? '' : '<div style="font-size:10px;font-weight:400;color:var(--ink-soft);">weg</div>'}</div>
-          <select id="oc-p-${r.seat}" onchange="updateOnlineCloseSummary()">${opts(r.playerId)}</select>
-          <input id="oc-b-${r.seat}" type="number" step="0.01" value="${r.buyin}" oninput="updateOnlineCloseSummary()">
-          <input id="oc-f-${r.seat}" type="number" step="0.01" value="${r.final}" oninput="updateOnlineCloseSummary()">
+          <select id="oc-p-${r.idx}" onchange="updateOnlineCloseSummary()">${opts(r.playerId)}</select>
+          <input id="oc-b-${r.idx}" type="number" step="0.01" value="${r.buyin}" oninput="updateOnlineCloseSummary()">
+          <input id="oc-f-${r.idx}" type="number" step="0.01" value="${r.final}" oninput="updateOnlineCloseSummary()">
         </div>`).join('')}
         <div id="oc-summary" style="margin-top:14px;font-size:13px;"></div>
         <div id="oc-error"></div>
@@ -1280,10 +1295,10 @@ function openOnlineCloseModal(){
 }
 function readOnlineClosePlan(){
   return onlineClosePlan.rows.map(r => ({
-    seat: r.seat,
-    playerId: (document.getElementById('oc-p-' + r.seat) || {}).value || '',
-    buyin: parseFloat((document.getElementById('oc-b-' + r.seat) || {}).value) || 0,
-    final: parseFloat((document.getElementById('oc-f-' + r.seat) || {}).value) || 0
+    seat: r.seat, histSeat: r.histSeat, hands: r.hands,
+    playerId: (document.getElementById('oc-p-' + r.idx) || {}).value || '',
+    buyin: parseFloat((document.getElementById('oc-b-' + r.idx) || {}).value) || 0,
+    final: parseFloat((document.getElementById('oc-f-' + r.idx) || {}).value) || 0
   }));
 }
 function updateOnlineCloseSummary(){
@@ -1299,7 +1314,7 @@ function confirmCloseOnlineTable(){
   const bad = rows.find(r => !r.playerId && (r.buyin > 0 || r.final > 0));
   if(bad){ document.getElementById('oc-error').innerHTML = `<div class="error-msg">Bitte für Sitz ${bad.seat + 1} einen Spieler wählen.</div>`; return; }
   closeModal();
-  reallyCloseOnlineTable(rows.filter(r => r.playerId));
+  reallyCloseOnlineTable(rows.filter(r => r.playerId), onlineClosePlan.rows);
 }
 // Eine Zeile aus online_hand_history in das Hand-Format der Handerfassung umwandeln (damit Hände-Tab und Replay funktionieren)
 function onlineHistoryRowToHand(row, handNumber, sessionId, pidOfSeat){
@@ -1354,7 +1369,7 @@ function onlineHistoryRowToHand(row, handNumber, sessionId, pidOfSeat){
     createdAt: row.created_at || new Date().toISOString()
   };
 }
-async function reallyCloseOnlineTable(planRows){
+async function reallyCloseOnlineTable(planRows, allRows){
   const tbl = onlineTables.find(x => x.id === currentOnlineTableId);
   if(!tbl || !isClubAdmin()){ showToast('Nur ein Club-Admin darf den Tisch schliessen.'); return; }
   if(!planRows || !planRows.length){ showToast('Keine Teilnehmer.'); return; }
@@ -1398,9 +1413,11 @@ async function reallyCloseOnlineTable(planRows){
     ensureClubDefaults();
     if(!currentClub.hands) currentClub.hands = [];
     const pidOfSeat = {};
-    planRows.forEach(r => { pidOfSeat[String(r.seat)] = r.playerId; });
+    planRows.forEach(r => { if(r.histSeat || pidOfSeat[String(r.seat)] == null) pidOfSeat[String(r.seat)] = r.playerId; });
     (hist || []).forEach((row, idx) => {
-      const h = onlineHistoryRowToHand(row, idx + 1, session.id, pidOfSeat);
+      // Neuere Hände wissen selbst, wer auf welchem Sitz sass; ältere nutzen die Zuordnung aus dem Dialog
+      const map = Object.assign({}, pidOfSeat, ((row.summary || {}).seat_players) ? Object.fromEntries(Object.entries(row.summary.seat_players).filter(e => e[1])) : {});
+      const h = onlineHistoryRowToHand(row, idx + 1, session.id, map);
       if(h){ currentClub.hands.push(h); handsSaved++; }
     });
     session.handCounter = handsSaved;
