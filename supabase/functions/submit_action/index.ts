@@ -132,7 +132,12 @@ Deno.serve(async (req) => {
       const rem = dl - Date.now();
       if (rem > 0) return json({ ok: false, error: 'not_expired', remaining_ms: Math.max(0, rem - GRACE_MS) });
       actingSeat = stateRow.current_seat as number;
-      action = 'fold';
+      // Ist nichts zu bezahlen (Einsatz gleich hoch wie der höchste der Mitspieler), wird gecheckt statt gefoldet
+      const betsT = (stateRow.bets || {}) as Record<string, number>;
+      const foldedT = (stateRow.folded || {}) as Record<string, boolean>;
+      const maxT = Math.max(0, ...seatOrder.filter(sn => !foldedT[sn]).map(sn => Number(betsT[String(sn)] || 0)));
+      const myT = Number(betsT[String(actingSeat)] || 0);
+      action = (maxT - myT <= 0.0001) ? 'check' : 'fold';
       timedOutSeat = actingSeat;
     }
 
@@ -155,6 +160,18 @@ Deno.serve(async (req) => {
       actionLog.push({ seat: actingSeat, street: stateRow.phase, action, amount: logAmount });
     }
 
+    // Ist der nächste Sitz ausgesetzt (Timeout, noch nicht zurückgemeldet), läuft seine Zeit sofort ab:
+    // er checkt gratis weiter, sonst wird er gefoldet (siehe 'timeout'), ausser er meldet sich vorher zurück.
+    const handEndsNow = !!(result.handOver || newState.phase === 'showdown');
+    let nextSitOut = false;
+    if (hasDeadlineCol && !handEndsNow && newState.current_seat != null) {
+      if (newState.current_seat === timedOutSeat) nextSitOut = true;
+      else {
+        const { data: so } = await admin.from('online_seats').select('sitting_out').eq('table_id', table_id).eq('seat_no', newState.current_seat).maybeSingle();
+        nextSitOut = !!(so && so.sitting_out);
+      }
+    }
+
     // Optimistischer Schreibschutz: nur anwenden, wenn seit dem Lesen niemand
     // anders geschrieben hat.
     const { data: written, error: updateErr } = await admin
@@ -165,7 +182,7 @@ Deno.serve(async (req) => {
         folded: newState.folded, all_in: newState.all_in, contributions: newState.contributions,
         last_raise_size: newState.last_raise_size, last_aggressor: newState.last_aggressor,
         ...(hasActionsCol ? { actions: actionLog } : {}),
-        ...(hasDeadlineCol ? { turn_deadline: (result.handOver || newState.phase === 'showdown') ? null : new Date(Date.now() + TURN_MS + GRACE_MS).toISOString() } : {}),
+        ...(hasDeadlineCol ? { turn_deadline: handEndsNow ? null : new Date(Date.now() + (nextSitOut ? 0 : TURN_MS + GRACE_MS)).toISOString() } : {}),
         updated_at: new Date().toISOString(),
       })
       .eq('table_id', table_id)
@@ -224,15 +241,22 @@ Deno.serve(async (req) => {
           }
         }
       }
+      // Chip-Bilanz zur Kontrolle: Stacks + Pot vor der Aktion müssen den Stacks nach der Auszahlung entsprechen
+      const chipsBefore = Math.round((seatOrder.reduce((a, sn) => a + seats[sn].stack, 0) + Number(stateRow.pot)) * 100) / 100;
+      let chipsAfter = 0;
       for (const seatNo of seatOrder) {
         const sn = Number(seatNo);
         const amt = payouts[sn] || 0;
         const delta = sevenDeuce ? (sn === sevenDeuce.winner_seat ? sevenDeuce.total : -(sevenDeuce.payments[String(sn)] || 0)) : 0;
+        const base = newStacks[sn] ?? seats[sn].stack;
+        const finalStack = Math.round((base + amt + delta) * 100) / 100;
+        chipsAfter += finalStack;
         if (amt > 0.0001 || Math.abs(delta) > 0.0001) {
-          const base = newStacks[sn] ?? seats[sn].stack;
-          await admin.from('online_seats').update({ stack: Math.round((base + amt + delta) * 100) / 100 }).eq('table_id', table_id).eq('seat_no', sn);
+          await admin.from('online_seats').update({ stack: finalStack }).eq('table_id', table_id).eq('seat_no', sn);
         }
       }
+      chipsAfter = Math.round(chipsAfter * 100) / 100;
+      if (Math.abs(chipsAfter - chipsBefore) > 0.005) console.error('CHIP MISMATCH', { table_id, hand_no: stateRow.hand_no, chipsBefore, chipsAfter, payouts });
       // Nur die hole_cards der tatsächlich aufgedeckten Sitze (Aggressor + echte
       // Gewinner) landen in der Historie/im Broadcast — ein schlechteres Blatt
       // bleibt für immer verdeckt, wie am echten Tisch.
@@ -244,7 +268,7 @@ Deno.serve(async (req) => {
           board: newState.board, revealed_hole_cards: revealedHoleCards, payouts, phase_ended: newState.phase,
           // Zusatzdaten fürs Übernehmen in die gespeicherten Hände (Replay)
           actions: actionLog, seat_order: seatOrder, dealer_seat: stateRow.dealer_seat,
-          contributions: newState.contributions, seven_deuce: sevenDeuce,
+          contributions: newState.contributions, seven_deuce: sevenDeuce, chips_before: chipsBefore, chips_after: chipsAfter,
           start_stacks: Object.fromEntries(seatOrder.map(sn => [String(sn), (newStacks[sn] ?? seats[sn].stack) + Number((newState.contributions || {})[String(sn)] || 0)])),
           pot_total: Object.values(newState.contributions || {}).reduce((a: number, b) => a + Number(b), 0),
         },
@@ -271,7 +295,7 @@ Deno.serve(async (req) => {
         payload: {
           phase: newState.phase, board: newState.board, pot: newState.pot, current_seat: newState.current_seat,
           bets: newState.bets, folded: newState.folded, all_in: newState.all_in, last_raise_size: newState.last_raise_size,
-          dealer_seat: newState.dealer_seat, hand_no: stateRow.hand_no, last_action: { seat: actingSeat, action, amount }, hand_over: false, turn_ms: TURN_MS,
+          dealer_seat: newState.dealer_seat, hand_no: stateRow.hand_no, last_action: { seat: actingSeat, action, amount }, hand_over: false, turn_ms: nextSitOut ? 0 : TURN_MS,
         },
       });
     }

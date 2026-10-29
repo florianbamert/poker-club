@@ -1745,7 +1745,13 @@ function onlineTurnSync(hs){
   if(!active){ onlineTurn = null; if(onlineTurnTimer){ clearInterval(onlineTurnTimer); onlineTurnTimer = null; } return; }
   const la = hs.last_action || {};
   const key = [hs.hand_no, hs.phase, hs.current_seat, la.seat, la.action, la.amount].join('|');
-  if(!onlineTurn || onlineTurn.key !== key) onlineTurn = { key, t0: Date.now(), limit: (hs.turn_ms || TB_BASE_S * 1000), lastTry: 0 };
+  if(!onlineTurn || onlineTurn.key !== key) {
+    // Ausgesetzter Sitz am Zug: Zeit läuft sofort ab (checkt gratis weiter, sonst Fold)
+    const t = onlineTables.find(x => x.id === currentOnlineTableId);
+    const cs = t ? t.seats.find(x => x.seat_no === hs.current_seat) : null;
+    const lim = (cs && cs.sitting_out) ? 0 : (hs.turn_ms != null ? hs.turn_ms : TB_BASE_S * 1000);
+    onlineTurn = { key, t0: Date.now(), limit: lim, lastTry: 0 };
+  }
   if(!onlineTurnTimer) onlineTurnTimer = setInterval(onlineTurnTick, 250);
 }
 async function onlineReportTimeout(){
