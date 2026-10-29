@@ -1061,7 +1061,14 @@ function onlineBoardAnimAttr(){
 let onlineHandLog = { hand_no: null, phase: 'preflop', entries: [] };
 function onlineLogFromState(st){
   if(!st) return;
-  if(onlineHandLog.hand_no !== st.hand_no) onlineHandLog = { hand_no: st.hand_no, phase: 'preflop', entries: [] };
+  if(onlineHandLog.hand_no !== st.hand_no) onlineHandLog = { hand_no: st.hand_no, phase: 'preflop', entries: [], blinds: null };
+  if(!onlineHandLog.blinds && Array.isArray(st.seat_order) && st.dealer_seat != null && st.bets && !st.last_action){
+    const o = st.seat_order.map(Number), n = o.length, di = o.indexOf(Number(st.dealer_seat));
+    if(di >= 0 && n >= 2){
+      const sbS = n === 2 ? o[di] : o[(di + 1) % n], bbS = n === 2 ? o[(di + 1) % n] : o[(di + 2) % n];
+      onlineHandLog.blinds = [{ seat: sbS, label: 'Small Blind', amount: Number(st.bets[String(sbS)] || 0) }, { seat: bbS, label: 'Big Blind', amount: Number(st.bets[String(bbS)] || 0) }];
+    }
+  }
   if(Array.isArray(st.actions)){ onlineHandLog.entries = st.actions.slice(); onlineHandLog.phase = st.phase; return; }
   const la = st.last_action;
   if(la && la.seat != null){
@@ -1079,9 +1086,12 @@ function onlineHandLogHtml(hs){
   let html = '';
   streets.forEach(st => {
     const acts = entries.filter(e => e.street === st);
-    if(!acts.length && !slices[st].length) return;
+    if(!acts.length && !slices[st].length && !(st === 'preflop' && onlineHandLog.blinds && onlineHandLog.hand_no === (hs && hs.hand_no))) return;
     html += `<div class="hand-log-street">${names[st]}${slices[st].length ? ' — ' + slices[st].map(cardChipHtml).join(' ') : ''}</div>`;
     let aggr = st === 'preflop' ? 1 : 0;
+    if(st === 'preflop' && onlineHandLog.hand_no === (hs && hs.hand_no) && onlineHandLog.blinds){
+      onlineHandLog.blinds.forEach(b => { html += `<div class="hand-log-entry"><span class="who">${onlineSeatLabel(b.seat)}</span><span class="act">${b.label} ${fmtChip(b.amount)}</span></div>`; });
+    }
     acts.forEach(a => {
       let verb = a.action === 'fold' ? 'Fold' : a.action === 'check' ? 'Check' : a.action === 'call' ? 'Call' : (a.action === 'bet' || a.action === 'raise') ? (++aggr === 1 ? 'Bet' : aggr === 2 ? 'Raise' : aggr + '-Bet') : a.action;
       const label = verb + (a.amount != null && a.action !== 'fold' && a.action !== 'check' ? ' ' + fmtChip(a.amount) : '');
