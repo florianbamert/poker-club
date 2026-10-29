@@ -65,7 +65,7 @@ function json(body: unknown, status = 200): Response {
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS_HEADERS });
   try {
-    const { table_id, action: actionIn, amount } = await req.json() as { table_id: string; action: ActionType | 'timeout' | 'timebank' | 'sitback'; amount?: number };
+    const { table_id, action: actionIn, amount } = await req.json() as { table_id: string; action: ActionType | 'timeout' | 'timebank' | 'sitback' | 'showcards'; amount?: number };
     let action = actionIn as ActionType;
     if (!table_id || !actionIn) return json({ error: 'table_id oder action fehlt' }, 400);
 
@@ -105,6 +105,33 @@ Deno.serve(async (req) => {
       contributions: stateRow.contributions || {}, last_raise_size: Number(stateRow.last_raise_size),
       last_aggressor: stateRow.last_aggressor ?? null,
     };
+
+    // Gewinner einer unangefochtenen Hand (alle anderen gefoldet) darf seine Karten freiwillig zeigen
+    if (actionIn === 'showcards') {
+      if (stateRow.phase !== 'done') return json({ error: 'hand_not_over' }, 400);
+      const { data: hh } = await admin.from('online_hand_history').select('id, summary').eq('table_id', table_id).eq('hand_no', stateRow.hand_no).maybeSingle();
+      if (!hh) return json({ error: 'no_history' }, 400);
+      const sm = hh.summary as Record<string, any>;
+      if (!(Number((sm.payouts || {})[String(actingSeat)] || 0) > 0)) return json({ error: 'not_winner' }, 400);
+      const revealed: Record<string, string[]> = { ...(sm.revealed_hole_cards || {}) };
+      if (revealed[String(actingSeat)]) return json({ ok: true });
+      const mine = stateRow.hole_cards ? stateRow.hole_cards[String(actingSeat)] : null;
+      if (!mine) return json({ error: 'no_cards' }, 400);
+      revealed[String(actingSeat)] = mine;
+      await admin.from('online_hand_history').update({ summary: { ...sm, revealed_hole_cards: revealed } }).eq('id', hh.id);
+      await admin.from('online_hand_state').update({ revealed_hole_cards: revealed }).eq('table_id', table_id);
+      const ch = admin.channel(`table:${table_id}:public`);
+      await ch.send({
+        type: 'broadcast', event: 'state',
+        payload: {
+          phase: 'done', board: sm.board, pot: 0, current_seat: null, hand_no: stateRow.hand_no, actions: sm.actions,
+          hand_over: true, payouts: sm.payouts, seven_deuce: sm.seven_deuce, contributions: sm.contributions, uncontested: !!sm.uncontested,
+          revealed_hole_cards: revealed, cards_shown_seat: actingSeat, folded: stateRow.folded, all_in: stateRow.all_in, bets: stateRow.bets,
+          dealer_seat: stateRow.dealer_seat,
+        },
+      });
+      return json({ ok: true });
+    }
 
     // Zeitkontrolle (benötigt chipmate_online_timebank.sql: Spalten turn_deadline / timebank_last_hand)
     const hasDeadlineCol = 'turn_deadline' in stateRow;
@@ -261,6 +288,7 @@ Deno.serve(async (req) => {
       // Nur die hole_cards der tatsächlich aufgedeckten Sitze (Aggressor + echte
       // Gewinner) landen in der Historie/im Broadcast — ein schlechteres Blatt
       // bleibt für immer verdeckt, wie am echten Tisch.
+      const uncontested = seatOrder.filter(sn => !(newState.folded || {})[String(sn)]).length === 1;
       const revealedHoleCards: Record<string, string[]> = {};
       for (const s of revealSeats) revealedHoleCards[s] = stateRow.hole_cards[String(s)];
       await admin.from('online_hand_history').insert({
@@ -268,7 +296,7 @@ Deno.serve(async (req) => {
         summary: {
           board: newState.board, revealed_hole_cards: revealedHoleCards, payouts, phase_ended: newState.phase,
           // Zusatzdaten fürs Übernehmen in die gespeicherten Hände (Replay)
-          actions: actionLog, seat_players: seatPlayers, seat_order: seatOrder, dealer_seat: stateRow.dealer_seat,
+          actions: actionLog, seat_players: seatPlayers, uncontested, seat_order: seatOrder, dealer_seat: stateRow.dealer_seat,
           contributions: newState.contributions, seven_deuce: sevenDeuce, chips_before: chipsBefore, chips_after: chipsAfter,
           start_stacks: Object.fromEntries(seatOrder.map(sn => [String(sn), (newStacks[sn] ?? seats[sn].stack) + Number((newState.contributions || {})[String(sn)] || 0)])),
           pot_total: Object.values(newState.contributions || {}).reduce((a: number, b) => a + Number(b), 0),
@@ -283,7 +311,7 @@ Deno.serve(async (req) => {
           phase: 'done', board: newState.board, pot: 0, current_seat: newState.current_seat, bets: newState.bets,
           folded: newState.folded, all_in: newState.all_in,
           dealer_seat: newState.dealer_seat, hand_no: stateRow.hand_no, actions: actionLog, last_action: { seat: actingSeat, action, amount },
-          hand_over: true, payouts, seven_deuce: sevenDeuce,
+          hand_over: true, payouts, seven_deuce: sevenDeuce, contributions: newState.contributions, uncontested,
           // Beim Showdown werden nur die aufgedeckten Hände öffentlich — kein Leck,
           // sondern dieselbe Etikette wie am echten Tisch (siehe resolveMultiwayShowdown).
           revealed_hole_cards: revealedHoleCards,

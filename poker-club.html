@@ -464,6 +464,12 @@
   /* Karten-Austeilen (Hole Cards + Flop/Turn/River): nutzt die einzelnen CSS-Properties translate/rotate/scale,
      damit die bestehenden transform-Angaben der Elemente unberührt bleiben */
   @keyframes potFly{ 0%{ translate:0 0; scale:1; opacity:1; } 15%{ opacity:1; } 85%{ opacity:1; } 100%{ translate:var(--dx,0cqw) var(--dy,0cqw); scale:.55; opacity:0; } }
+  @keyframes netPop{ 0%{ opacity:0; translate:0 0; scale:.7; } 12%{ opacity:1; scale:1.1; } 25%{ scale:1; } 80%{ opacity:1; } 100%{ opacity:0; translate:0 -3.2cqw; } }
+  .net-pop{ position:absolute; z-index:10; transform:translate(-50%,-50%); pointer-events:none; font-family:'Fraunces',serif; font-weight:800; font-size:1.45cqw; color:#fff; background:#1E7B34; padding:.3cqw 1cqw; border-radius:99px; text-shadow:0 1px 2px rgba(0,0,0,.4); box-shadow:0 2px 10px rgba(0,0,0,.4); white-space:nowrap; animation:netPop 2.4s ease-out both; }
+  .net-pop.neg{ background:#A33; }
+  .win-box{ border:2px solid #C9A227; background:#FFF9E3; border-radius:12px; padding:10px 14px; margin:10px 0; }
+  .win-box .w-name{ font-weight:800; font-size:16px; }
+  .win-box .w-line{ font-size:13px; color:var(--ink-soft); margin-top:2px; }
   .pot-fly{ position:absolute; z-index:9; transform:translate(-50%,-50%); pointer-events:none; font-family:'Fraunces',serif; font-weight:700; font-size:1.3cqw; color:#fff; background:var(--brass); padding:.25cqw .8cqw; border-radius:99px; text-shadow:0 1px 2px rgba(0,0,0,.5); box-shadow:0 2px 8px rgba(0,0,0,.4); animation:potFly .85s cubic-bezier(.45,.05,.3,1) both; }
   @keyframes winFly{ 0%{ translate:var(--dx,0cqw) var(--dy,0cqw); scale:.6; opacity:.2; } 20%{ opacity:1; } 100%{ translate:0 0; scale:1; opacity:1; } }
   .win-fly{ position:absolute; inset:0; pointer-events:none; animation:winFly .85s cubic-bezier(.45,.05,.3,1) both; }
@@ -929,8 +935,9 @@ function scheduleAutoNextHand(){
     if(!isFallback && starter !== onlineMySeat) return;
     await callStartHand(handNo);
   };
-  setTimeout(() => run(false), 4500);
-  setTimeout(() => run(true), 10000);
+  const extra = hs.uncontested ? 3500 : 0;   // Zeit, damit der Gewinner entscheiden kann, ob er die Karten zeigt
+  setTimeout(() => run(false), 4500 + extra);
+  setTimeout(() => run(true), 10000 + extra);
 }
 
 // Letzte Aktionen als Sprechblasen am Sitz (Fold / Check / Call / Bet / Raise / 3-Bet / All-in)
@@ -1025,6 +1032,7 @@ function onlineAnimUpdate(hs, seatedCount){
     onlineAnim.doneHand = hs.hand_no; onlineSound('win');
     onlineAnim.potFly = { hand: hs.hand_no, t0: now, payouts: Object.assign({}, hs.payouts || {}), pot: Number(hs.pot || 0) };
     setTimeout(() => { if(currentOnlineTableId) render(); }, ONLINE_POTFLY_MS + 60);
+    setTimeout(() => { if(currentOnlineTableId) render(); }, ONLINE_POTFLY_MS + 2600);
   }
 }
 const ONLINE_POTFLY_MS = 850;
@@ -1043,6 +1051,20 @@ function onlinePotFlyHtml(slot, seatNo, hs){
   const el = Date.now() - onlineAnim.potFly.t0;
   const dx = (slot.left - onlinePotPos.x).toFixed(1), dy = (slot.top - onlinePotPos.y).toFixed(1);
   return `<div class="pot-fly" style="left:${onlinePotPos.x}%;top:${onlinePotPos.y}%;--dx:calc(${dx} * 1cqw);--dy:calc(${dy} * .55cqw);animation-delay:${-el}ms;">${fmtChipPlain(amt)}</div>`;
+}
+function onlineNetOf(hs, seat){
+  if(!hs || !hs.payouts || !hs.contributions) return null;
+  return Math.round((Number(hs.payouts[String(seat)] || 0) - Number(hs.contributions[String(seat)] || 0)) * 100) / 100;
+}
+function onlineNetPopHtml(slot, seatNo, hs){
+  const pf = onlineAnim && onlineAnim.potFly;
+  if(!hs || !hs.hand_over || !pf || pf.hand !== hs.hand_no) return '';
+  const el = Date.now() - pf.t0;
+  if(el < 0 || el > ONLINE_POTFLY_MS + 2500) return '';
+  if(!(Number((hs.payouts || {})[String(seatNo)] || 0) > 0.0001)) return '';
+  const net = onlineNetOf(hs, seatNo);
+  if(net == null) return '';
+  return `<div class="net-pop${net < 0 ? ' neg' : ''}" style="left:${slot.left}%;top:${slot.top - 7}%;animation-delay:${ONLINE_POTFLY_MS - el}ms;">${net >= 0 ? '+' : ''}${fmtChipPlain(net)} netto</div>`;
 }
 function onlineHoleAnimAttrs(slot, seatNo){
   if(!onlineAnim || !onlineAnim.holeT0) return { cls:'', style:'' };
@@ -1101,7 +1123,7 @@ function onlineHandLogHtml(hs){
   if(hs && hs.hand_over){
     const shown = Object.keys(hs.hole_cards || {}).filter(sn => (hs.hole_cards[sn] || []).length === 2);
     if(shown.length) html += `<div class="hand-log-street">Showdown</div>` + shown.map(sn => `<div class="hand-log-entry"><span class="who">${onlineSeatLabel(Number(sn))}</span><span class="act">${hs.hole_cards[sn].map(cardChipHtml).join(' ')}</span></div>`).join('');
-    if(hs.payouts) html += `<div class="hand-log-street">Ergebnis</div>` + Object.keys(hs.payouts).filter(sn => hs.payouts[sn] > 0.0001).map(sn => `<div class="hand-log-entry"><span class="who">${onlineSeatLabel(Number(sn))}</span><span class="act win">+${formatMoney(hs.payouts[sn])}</span></div>`).join('');
+    if(hs.payouts) html += `<div class="hand-log-street">Ergebnis</div>` + Object.keys(hs.payouts).filter(sn => hs.payouts[sn] > 0.0001).map(sn => { const net = onlineNetOf(hs, sn); return `<div class="hand-log-entry"><span class="who">🏆 ${onlineSeatLabel(Number(sn))}</span><span class="act win">Winner · Pot ${formatMoney(hs.payouts[sn])}${net != null ? ' (netto ' + (net >= 0 ? '+' : '') + formatMoney(net) + ')' : ''}</span></div>`; }).join('');
   }
   return html || `<div class="hand-log-entry" style="color:var(--ink-soft);text-align:center;padding:30px 0;">Noch keine Aktionen in dieser Hand</div>`;
 }
@@ -1655,7 +1677,7 @@ function onlinePokerSeatHtml(slot, seatRow, seatNo, hs, isMe){
     <div class="poker-seat${folded?' folded':''}${isActor?' active':''}" ${slot.seatAttrs||''} style="left:${slot.left}%;top:${slot.top}%;width:${avatarSizePercent(slot.avatarScale)}%;z-index:${slot.zAvatar!=null?slot.zAvatar:2};">
       ${avatarHtml(displayObj, avatarSeatStyleAttr(slot.avatarScale, slot.zAvatar))}
       ${!useAbsoluteBox ? platePlateHtml : ''}
-    </div>${useAbsoluteBox ? platePlateHtml : ''}${standaloneNameHtml}${standaloneStackHtml}${standaloneHoleCardsHtml}${standalonePosTagHtml}${statusOverlayHtml}${onlineActionBubbleHtml(slot, seatNo)}${onlinePotFlyHtml(slot, seatNo, hs)}`;
+    </div>${useAbsoluteBox ? platePlateHtml : ''}${standaloneNameHtml}${standaloneStackHtml}${standaloneHoleCardsHtml}${standalonePosTagHtml}${statusOverlayHtml}${onlineActionBubbleHtml(slot, seatNo)}${onlinePotFlyHtml(slot, seatNo, hs)}${onlineNetPopHtml(slot, seatNo, hs)}`;
 }
 
 // Sprechblase mit der letzten Aktion — läuft per CSS-Animation und wird nach ~2,6 s unsichtbar.
@@ -1851,7 +1873,7 @@ function renderOnlineTableViewInner(){
           ${canClose ? `<button class="btn btn-secondary" onclick="closeOnlineTable()">Tisch schliessen &amp; Ergebnis übernehmen</button>` : ''}
         </div>` : ''}
         ${(!hs || !hs.hand_no) && seatedRows.length >= 2 && !seatedRows.every(s => s.player_id) ? `<p class="lede" style="font-size:12px;">Hinweis: Ohne verknüpften Spieler (siehe Players-Tab) kann dieser Tisch später nicht in die Statistik übernommen werden.</p>` : ''}
-        ${hs && hs.hand_over && hs.payouts ? `<div class="status-banner ok" style="margin:10px 0;"><strong>${renderOnlinePayoutSummary(hs.payouts)}</strong></div>` : ''}
+        ${hs && hs.hand_over && hs.payouts ? onlineWinBoxHtml(hs) : ''}
         ${hs && hs.hand_over && hs.seven_deuce ? `<div class="status-banner ok" style="margin:10px 0;background:#FFF7E8;border-color:#F0DBA0;color:#8A6A0A;">🐍 7-2 Game! ${escapeHtml(onlineSeatLabel(hs.seven_deuce.winner_seat))} hat 7-2 — erhält zusätzlich ${formatMoney(hs.seven_deuce.total)}</div>` : ''}
         ${myTurn ? renderOnlineActionBar(toCall, mySeatRow ? mySeatRow.stack : 0, hs, tbl)
                  : (hs && ['preflop','flop','turn','river'].includes(phase) ? `<div style="text-align:center;color:var(--ink-soft);padding:16px 0;">Warte auf ${escapeHtml(onlineSeatLabel(hs.current_seat))}…</div>` : '')}
@@ -1864,6 +1886,28 @@ function renderOnlineTableViewInner(){
 // Zeigt, wer die(se) Hand gewonnen hat — payouts ist {seatNo: Betrag}, von
 // resolveMultiwayShowdown bzw. dem Fold-Kurzschluss geliefert (siehe
 // submit_action Edge Function). Mehrere Einträge = Split-Pot/Side-Pots.
+function onlineWinBoxHtml(hs){
+  const winners = Object.keys(hs.payouts || {}).filter(sn => hs.payouts[sn] > 0.0001);
+  if(!winners.length) return '';
+  const how = hs.uncontested ? 'Alle anderen haben gefoldet' : (winners.length > 1 ? 'Split Pot (Showdown)' : 'Showdown');
+  const rows = winners.map(sn => {
+    const net = onlineNetOf(hs, sn);
+    return `<div style="margin-top:6px;"><div class="w-name">🏆 ${onlineSeatLabel(Number(sn))}</div>
+      <div class="w-line">Pot-Anteil <strong>${formatMoney(hs.payouts[sn])}</strong>${net != null ? ` · netto in dieser Hand <strong style="color:${net >= 0 ? '#1E7B34' : '#A33'};">${net >= 0 ? '+' : ''}${formatMoney(net)}</strong>` : ''}</div></div>`;
+  }).join('');
+  const iAmWinner = onlineMySeat != null && Number(hs.payouts[String(onlineMySeat)] || 0) > 0.0001;
+  const canShow = hs.uncontested && iAmWinner && !(hs.hole_cards && hs.hole_cards[String(onlineMySeat)]);
+  const shown = hs.uncontested && hs.hole_cards && winners.some(sn => (hs.hole_cards[sn] || []).length === 2);
+  return `<div class="win-box"><div style="font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--ink-soft);">Winner · ${how}</div>${rows}
+    ${canShow ? `<div style="display:flex;gap:8px;margin-top:10px;"><button class="btn btn-secondary btn-sm" onclick="onlineShowCards()">Karten zeigen</button><span style="font-size:12px;color:var(--ink-soft);align-self:center;">sonst bleiben sie verdeckt</span></div>` : ''}
+    ${shown ? `<div style="font-size:12px;color:var(--ink-soft);margin-top:6px;">Hat die Karten gezeigt.</div>` : ''}</div>`;
+}
+async function onlineShowCards(){
+  try{
+    const { data, error } = await sb.functions.invoke('submit_action', { body: { table_id: currentOnlineTableId, action: 'showcards' } });
+    if(error || (data && data.error)){ showToast('Karten zeigen nicht möglich: ' + await edgeErrorText(data, error)); return; }
+  }catch(e){ showToast('Karten zeigen nicht möglich.'); }
+}
 function renderOnlinePayoutSummary(payouts){
   const entries = Object.keys(payouts).filter(s => payouts[s] > 0.0001);
   if(!entries.length) return '';
