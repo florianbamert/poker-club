@@ -716,7 +716,12 @@ async function loadOnlineTables(){
     .select('*').eq('club_id', currentClubId).order('created_at', {ascending:false});
   if(error){ console.error(error); onlineTables = []; render(); return; }
   const { data: seats } = await sb.from('online_seats').select('*').in('table_id', (tables||[]).map(t => t.id).concat(['00000000-0000-0000-0000-000000000000']));
-  onlineTables = (tables||[]).map(t => ({ ...t, seats: (seats||[]).filter(s => s.table_id === t.id).sort((a,b) => a.seat_no - b.seat_no) }));
+  let parts = [];
+  try{
+    const r = await sb.from('online_participants').select('*').in('table_id', (tables||[]).map(t => t.id).concat(['00000000-0000-0000-0000-000000000000'])).order('joined_at', {ascending:true});
+    if(!r.error) parts = r.data || [];
+  }catch(e){}
+  onlineTables = (tables||[]).map(t => ({ ...t, seats: (seats||[]).filter(s => s.table_id === t.id).sort((a,b) => a.seat_no - b.seat_no), participants: parts.filter(x => x.table_id === t.id) }));
   render();
 }
 
@@ -1240,8 +1245,20 @@ async function closeOnlineTable(){
   if(!isClubAdmin()){ showToast('Nur ein Club-Admin darf den Tisch schliessen.'); return; }
   const { data: hist, error } = await sb.from('online_hand_history').select('*').eq('table_id', currentOnlineTableId).order('hand_no', { ascending: true });
   if(error){ showToast('Hände konnten nicht geladen werden: ' + error.message); return; }
-  const derived = Object.values(deriveOnlineLedger(hist));
   const rows = [];
+  const parts = (tbl.participants || []);
+  if(parts.length){
+    parts.forEach(x => {
+      const joined = new Date(x.joined_at).getTime(), left = x.left_at ? new Date(x.left_at).getTime() : null;
+      const n = (hist || []).filter(h => { const t0 = new Date(h.created_at).getTime(); return (h.summary || {}).seat_order && (h.summary.seat_order || []).map(Number).includes(x.seat_no) && t0 >= joined - 2000 && (left == null || t0 <= left + 2000); }).length;
+      rows.push({ seat: x.seat_no, live: !x.left_at, histSeat: true, playerId: x.player_id || '', buyin: Number(x.buyin_total || 0), final: Number(x.final_stack || 0), hands: n, joined, left });
+    });
+    rows.forEach((r, i) => r.idx = i);
+    onlineClosePlan = { rows, hist: hist || [] };
+    openOnlineCloseModal();
+    return;
+  }
+  const derived = Object.values(deriveOnlineLedger(hist));
   const liveSeats = tbl.seats.filter(x => x.user_id);
   const usedLive = new Set();
   derived.forEach(d => {
@@ -1295,7 +1312,7 @@ function openOnlineCloseModal(){
 }
 function readOnlineClosePlan(){
   return onlineClosePlan.rows.map(r => ({
-    seat: r.seat, histSeat: r.histSeat, hands: r.hands,
+    seat: r.seat, histSeat: r.histSeat, hands: r.hands, joined: r.joined, left: r.left,
     playerId: (document.getElementById('oc-p-' + r.idx) || {}).value || '',
     buyin: parseFloat((document.getElementById('oc-b-' + r.idx) || {}).value) || 0,
     final: parseFloat((document.getElementById('oc-f-' + r.idx) || {}).value) || 0
@@ -1416,7 +1433,10 @@ async function reallyCloseOnlineTable(planRows, allRows){
     planRows.forEach(r => { if(r.histSeat || pidOfSeat[String(r.seat)] == null) pidOfSeat[String(r.seat)] = r.playerId; });
     (hist || []).forEach((row, idx) => {
       // Neuere Hände wissen selbst, wer auf welchem Sitz sass; ältere nutzen die Zuordnung aus dem Dialog
-      const map = Object.assign({}, pidOfSeat, ((row.summary || {}).seat_players) ? Object.fromEntries(Object.entries(row.summary.seat_players).filter(e => e[1])) : {});
+      const t0 = new Date(row.created_at).getTime();
+      const byTime = {};
+      planRows.forEach(r => { if(r.joined && t0 >= r.joined - 2000 && (r.left == null || t0 <= r.left + 2000)) byTime[String(r.seat)] = r.playerId; });
+      const map = Object.assign({}, pidOfSeat, byTime, ((row.summary || {}).seat_players) ? Object.fromEntries(Object.entries(row.summary.seat_players).filter(e => e[1])) : {});
       const h = onlineHistoryRowToHand(row, idx + 1, session.id, map);
       if(h){ currentClub.hands.push(h); handsSaved++; }
     });
@@ -4965,13 +4985,15 @@ function onlineLiveRowsHtml(s){
     if(onlineLiveLoadedFor !== s.id){ onlineLiveLoadedFor = s.id; Promise.resolve(loadOnlineTables()).then(() => render()); }
     return '';
   }
-  const seated = tbl.seats.filter(x => x.user_id);
-  if(!seated.length) return '<p class="lede" style="font-size:12px;">Aktuell sitzt niemand am Tisch.</p>';
-  return '<div style="margin-bottom:12px;"><div style="font-size:12px;color:var(--ink-soft);margin-bottom:6px;">Aktuell am Tisch (live)</div>' + seated.map(x => {
-    const pl = getPlayer(x.player_id);
-    const buy = Number(x.buyin_total || 0), st = Number(x.stack || 0), net = Math.round((st - buy) * 100) / 100;
+  const list = (tbl.participants && tbl.participants.length)
+    ? tbl.participants.map(x => ({ pid: x.player_id, email: x.user_email, buy: Number(x.buyin_total || 0), st: Number(x.final_stack || 0), gone: !!x.left_at }))
+    : tbl.seats.filter(x => x.user_id).map(x => ({ pid: x.player_id, email: x.user_email, buy: Number(x.buyin_total || 0), st: Number(x.stack || 0), gone: false }));
+  if(!list.length) return '<p class="lede" style="font-size:12px;">Noch niemand am Tisch.</p>';
+  return '<div style="margin-bottom:12px;">' + list.map(x => {
+    const pl = getPlayer(x.pid);
+    const net = Math.round((x.st - x.buy) * 100) / 100;
     return `<div class="participant-row">${pl ? avatarHtml(pl) : '<div></div>'}
-      <div><div class="p-name">${escapeHtml(pl ? fullName(pl) : (x.user_email || 'Unbekannt'))}</div><div class="p-status">Buy-in ${formatMoney(buy)} · Stack ${formatMoney(st)}</div></div><div></div>
+      <div><div class="p-name">${escapeHtml(pl ? fullName(pl) : (x.email || 'Unbekannt'))}${x.gone ? ' <span style="font-size:11px;color:var(--ink-soft);font-weight:400;">(verlassen)</span>' : ''}</div><div class="p-status">Buy-in ${formatMoney(x.buy)} · ${x.gone ? 'Endstack' : 'Stack'} ${formatMoney(x.st)}</div></div><div></div>
       <div><div class="p-net ${net>0?'pos':(net<0?'neg':'zero')}" style="text-align:right;">${formatMoney(net)}</div></div></div>`;
   }).join('') + '</div>';
 }
