@@ -935,7 +935,7 @@ function scheduleAutoNextHand(){
     if(!isFallback && starter !== onlineMySeat) return;
     await callStartHand(handNo);
   };
-  const extra = hs.uncontested ? 3500 : 0;   // Zeit, damit der Gewinner entscheiden kann, ob er die Karten zeigt
+  const extra = hs.uncontested ? 500 : 0;   // uncontested: genau 5 s Zeit für den Gewinner, sonst automatisch verdeckt
   setTimeout(() => run(false), 4500 + extra);
   setTimeout(() => run(true), 10000 + extra);
 }
@@ -1896,12 +1896,14 @@ function onlineWinBoxHtml(hs){
       <div class="w-line">Pot-Anteil <strong>${formatMoney(hs.payouts[sn])}</strong>${net != null ? ` · netto in dieser Hand <strong style="color:${net >= 0 ? '#1E7B34' : '#A33'};">${net >= 0 ? '+' : ''}${formatMoney(net)}</strong>` : ''}</div></div>`;
   }).join('');
   const iAmWinner = onlineMySeat != null && Number(hs.payouts[String(onlineMySeat)] || 0) > 0.0001;
-  const canShow = hs.uncontested && iAmWinner && !(hs.hole_cards && hs.hole_cards[String(onlineMySeat)]);
+  const canShow = hs.uncontested && iAmWinner && onlineMuckedHand !== hs.hand_no && !(hs.hole_cards && hs.hole_cards[String(onlineMySeat)]);
   const shown = hs.uncontested && hs.hole_cards && winners.some(sn => (hs.hole_cards[sn] || []).length === 2);
   return `<div class="win-box"><div style="font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--ink-soft);">Winner · ${how}</div>${rows}
-    ${canShow ? `<div style="display:flex;gap:8px;margin-top:10px;"><button class="btn btn-secondary btn-sm" onclick="onlineShowCards()">Karten zeigen</button><span style="font-size:12px;color:var(--ink-soft);align-self:center;">sonst bleiben sie verdeckt</span></div>` : ''}
+    ${canShow ? `<div style="display:flex;gap:8px;margin-top:10px;"><button class="btn btn-secondary btn-sm" onclick="onlineShowCards()">Karten zeigen</button><button class="btn btn-secondary btn-sm" onclick="onlineMuckCards()">Nicht zeigen</button><span style="font-size:12px;color:var(--ink-soft);align-self:center;">nach 5 s automatisch verdeckt</span></div>` : ''}
     ${shown ? `<div style="font-size:12px;color:var(--ink-soft);margin-top:6px;">Hat die Karten gezeigt.</div>` : ''}</div>`;
 }
+let onlineMuckedHand = null;
+function onlineMuckCards(){ onlineMuckedHand = onlineHandState ? onlineHandState.hand_no : null; render(); }
 async function onlineShowCards(){
   try{
     const { data, error } = await sb.functions.invoke('submit_action', { body: { table_id: currentOnlineTableId, action: 'showcards' } });
