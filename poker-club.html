@@ -1198,15 +1198,108 @@ function backToOnlineLobby(){
 // berechnen sich automatisch aus chipCount − sum(buyIns), keine Sonderlogik
 // nötig. Einzelne Hände werden seit Kurzem MIT übernommen (siehe onlineHistoryRowToHand),
 // weil das Hands-Schema eng an die Live-Tisch-UI gekoppelt ist.
-function closeOnlineTable(){
+// Aus dem Serverprotokoll (online_hand_history) rekonstruieren, wer wie viel eingezahlt hat und mit wie viel gegangen ist —
+// pro Sitznummer. Damit lässt sich die Session auch verbuchen, wenn ein Spieler den Tisch schon verlassen hat.
+function deriveOnlineLedger(hist){
+  const per = {};
+  (hist || []).forEach(row => {
+    const sm = row.summary || {};
+    const order = Array.isArray(sm.seat_order) ? sm.seat_order : [];
+    const sd = sm.seven_deuce;
+    order.forEach(sn => {
+      const k = String(sn);
+      const start = Number((sm.start_stacks || {})[k]);
+      if(!isFinite(start)) return;
+      const contrib = Number((sm.contributions || {})[k] || 0);
+      const pay = Number((sm.payouts || {})[k] || 0);
+      let delta = 0;
+      if(sd) delta = (Number(sn) === Number(sd.winner_seat)) ? Number(sd.total || 0) : -Number((sd.payments || {})[k] || 0);
+      const end = Math.round((start - contrib + pay + delta) * 100) / 100;
+      const cur = per[k];
+      if(!cur) per[k] = { seat: Number(sn), buyin: Math.round(start * 100) / 100, final: end, hands: 1 };
+      else {
+        if(start > cur.final + 0.005) cur.buyin = Math.round((cur.buyin + (start - cur.final)) * 100) / 100;   // Nachkauf / Wiedereinstieg
+        cur.final = end; cur.hands++;
+      }
+    });
+  });
+  return per;
+}
+let onlineClosePlan = null;
+async function closeOnlineTable(){
   const tbl = onlineTables.find(x => x.id === currentOnlineTableId);
   if(!tbl) return;
   if(!isClubAdmin()){ showToast('Nur ein Club-Admin darf den Tisch schliessen.'); return; }
-  const seated = tbl.seats.filter(s => s.user_id);
-  if(seated.length < 2){ showToast('Tisch braucht zwei besetzte Plätze.'); return; }
-  if(seated.some(s => !s.player_id)){ showToast('Mindestens ein Platz ist keinem verknüpften Spieler zugeordnet — Ergebnis kann nicht übernommen werden.'); return; }
-  const summary = seated.map(s => `${onlineSeatPlayerName(s)}: ${formatMoney(s.stack)} (Buy-in ${formatMoney(s.buyin_total)})`).join('\n');
-  showConfirmModal(`Tisch schliessen und folgendes Ergebnis in die Statistik übernehmen?\n\n${summary}\n\nDas kann danach nicht mehr rückgängig gemacht werden.`, 'reallyCloseOnlineTable()', 'Schliessen & übernehmen');
+  const { data: hist, error } = await sb.from('online_hand_history').select('*').eq('table_id', currentOnlineTableId).order('hand_no', { ascending: true });
+  if(error){ showToast('Hände konnten nicht geladen werden: ' + error.message); return; }
+  const derived = deriveOnlineLedger(hist);
+  const seatNos = new Set(Object.keys(derived).map(Number));
+  tbl.seats.filter(x => x.user_id).forEach(x => seatNos.add(x.seat_no));
+  if(!seatNos.size){ showToast('Am Tisch wurde noch nichts gespielt.'); return; }
+  const rows = [...seatNos].sort((x, y) => x - y).map(sn => {
+    const live = tbl.seats.find(x => x.seat_no === sn && x.user_id);
+    const d = derived[String(sn)];
+    return {
+      seat: sn, live: !!live,
+      playerId: live ? (live.player_id || '') : '',
+      buyin: live ? Number(live.buyin_total || 0) : (d ? d.buyin : 0),
+      final: live ? Number(live.stack || 0) : (d ? d.final : 0),
+      hands: d ? d.hands : 0
+    };
+  });
+  onlineClosePlan = { rows, hist: hist || [] };
+  openOnlineCloseModal();
+}
+function openOnlineCloseModal(){
+  const plan = onlineClosePlan; if(!plan) return;
+  const opts = (sel) => `<option value="">— Spieler wählen —</option>` + currentClub.players.map(pl => `<option value="${pl.id}" ${pl.id === sel ? 'selected' : ''}>${escapeHtml(fullName(pl))}</option>`).join('');
+  document.getElementById('modal-root').innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this) closeModal()">
+      <div class="modal" style="max-width:640px;">
+        <h2>Tisch schliessen &amp; Ergebnis übernehmen</h2>
+        <p class="lede" style="margin-top:-6px;">Bitte prüfen: Wer sass auf welchem Sitz, mit welchem Buy-in, und mit wie viel ging er? Bei Sitzen, die schon verlassen wurden, sind die Werte aus dem Spielprotokoll berechnet.</p>
+        <div style="display:grid;grid-template-columns:54px 1fr 84px 84px;gap:6px;align-items:center;font-size:12px;color:var(--ink-soft);margin-top:10px;">
+          <div>Sitz</div><div>Spieler</div><div>Buy-in</div><div>Endstand</div>
+        </div>
+        ${plan.rows.map(r => `
+        <div style="display:grid;grid-template-columns:54px 1fr 84px 84px;gap:6px;align-items:center;margin-top:6px;">
+          <div style="font-weight:700;">${r.seat + 1}${r.live ? '' : '<div style="font-size:10px;font-weight:400;color:var(--ink-soft);">weg</div>'}</div>
+          <select id="oc-p-${r.seat}" onchange="updateOnlineCloseSummary()">${opts(r.playerId)}</select>
+          <input id="oc-b-${r.seat}" type="number" step="0.01" value="${r.buyin}" oninput="updateOnlineCloseSummary()">
+          <input id="oc-f-${r.seat}" type="number" step="0.01" value="${r.final}" oninput="updateOnlineCloseSummary()">
+        </div>`).join('')}
+        <div id="oc-summary" style="margin-top:14px;font-size:13px;"></div>
+        <div id="oc-error"></div>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" onclick="closeModal()">${t('btn_cancel')}</button>
+          <button class="btn btn-primary" onclick="confirmCloseOnlineTable()">Übernehmen</button>
+        </div>
+      </div>
+    </div>`;
+  updateOnlineCloseSummary();
+}
+function readOnlineClosePlan(){
+  return onlineClosePlan.rows.map(r => ({
+    seat: r.seat,
+    playerId: (document.getElementById('oc-p-' + r.seat) || {}).value || '',
+    buyin: parseFloat((document.getElementById('oc-b-' + r.seat) || {}).value) || 0,
+    final: parseFloat((document.getElementById('oc-f-' + r.seat) || {}).value) || 0
+  }));
+}
+function updateOnlineCloseSummary(){
+  const el = document.getElementById('oc-summary'); if(!el || !onlineClosePlan) return;
+  const rows = readOnlineClosePlan();
+  const net = Math.round(rows.reduce((a, r) => a + (r.final - r.buyin), 0) * 100) / 100;
+  el.innerHTML = Math.abs(net) < 0.005
+    ? `<span style="color:var(--green,#1E7B34);">✓ Gewinne und Verluste gleichen sich aus.</span>`
+    : `<span style="color:var(--red);">⚠ Summe aller Gewinne/Verluste: ${net > 0 ? '+' : ''}${formatMoney(net)} (sollte 0 sein). Es sind Chips verloren gegangen oder ein Wert stimmt nicht. Du kannst trotzdem übernehmen.</span>`;
+}
+function confirmCloseOnlineTable(){
+  const rows = readOnlineClosePlan();
+  const bad = rows.find(r => !r.playerId && (r.buyin > 0 || r.final > 0));
+  if(bad){ document.getElementById('oc-error').innerHTML = `<div class="error-msg">Bitte für Sitz ${bad.seat + 1} einen Spieler wählen.</div>`; return; }
+  closeModal();
+  reallyCloseOnlineTable(rows.filter(r => r.playerId));
 }
 // Eine Zeile aus online_hand_history in das Hand-Format der Handerfassung umwandeln (damit Hände-Tab und Replay funktionieren)
 function onlineHistoryRowToHand(row, handNumber, sessionId, pidOfSeat){
@@ -1261,11 +1354,22 @@ function onlineHistoryRowToHand(row, handNumber, sessionId, pidOfSeat){
     createdAt: row.created_at || new Date().toISOString()
   };
 }
-async function reallyCloseOnlineTable(){
+async function reallyCloseOnlineTable(planRows){
   const tbl = onlineTables.find(x => x.id === currentOnlineTableId);
   if(!tbl || !isClubAdmin()){ showToast('Nur ein Club-Admin darf den Tisch schliessen.'); return; }
-  const seated = tbl.seats.filter(s => s.user_id);
+  if(!planRows || !planRows.length){ showToast('Keine Teilnehmer.'); return; }
   const nowIso = new Date().toISOString();
+  // Pro Spieler zusammenfassen (derselbe Spieler kann an mehreren Sitzen gesessen haben)
+  const byPlayer = {};
+  planRows.forEach(r => {
+    const e = byPlayer[r.playerId] || (byPlayer[r.playerId] = { playerId: r.playerId, buyIns: [], chipCount: 0 });
+    e.buyIns.push({ id: uid(), time: nowIso, amount: Number(r.buyin || 0), currency: currentClub.info.currency, method:'Online' });
+    e.chipCount = Math.round((e.chipCount + Number(r.final || 0)) * 100) / 100;
+  });
+  const participantsNew = Object.values(byPlayer).map(e => ({
+    playerId: e.playerId, buyIns: e.buyIns, chipCount: e.chipCount,
+    active:false, joinedAt:nowIso, leftAt:nowIso, finishRank:null
+  }));
   const linked = (currentClub.sessions || []).find(x => x.onlineTableId === currentOnlineTableId);
   const session = linked || {
     id: uid(), type:'cash', date: todayLocalISO(), venue:'Online', notes:'Online-Tisch (automatisch aus Chipmate Online Poker übernommen)',
@@ -1274,25 +1378,16 @@ async function reallyCloseOnlineTable(){
     blindTemplateId:null, blindLevelIndex:0, blindStartedAt:null, blindManualOffsetMs:0,
     buyinAmount:null, startChips:null, rebuyAmount:null, rebuyChips:null, addonAmount:null, addonChips:null,
     payoutMode:'percent', payoutPlaces:[100], payoutTemplateId:null,
-    status:'closed', seatOrder: seated.map(s => s.player_id), handCounter:0,
-    participants: seated.map(s => ({
-      playerId: s.player_id,
-      buyIns: [{ id: uid(), time: nowIso, amount: Number(s.buyin_total||0), currency: currentClub.info.currency, method:'Online' }],
-      chipCount: Number(s.stack||0),
-      active:false, joinedAt:nowIso, leftAt:nowIso, finishRank:null
-    })),
+    status:'closed', seatOrder: participantsNew.map(x => x.playerId), handCounter:0,
+    participants: participantsNew,
     actualCash:null, actualTwint:null, sevenDeuceGame:false, chipProfileId:null, betGridProfileId:null,
     equilibriumConfirmed:true, cashConfirmed:true, ranksConfirmed:false, payoutsConfirmed:false,
     createdAt: nowIso
   };
   if(linked){
     Object.assign(linked, {
-      status:'closed', seatOrder: seated.map(x => x.player_id), equilibriumConfirmed:true, cashConfirmed:true,
-      participants: seated.map(x => ({
-        playerId: x.player_id,
-        buyIns: [{ id: uid(), time: nowIso, amount: Number(x.buyin_total||0), currency: currentClub.info.currency, method:'Online' }],
-        chipCount: Number(x.stack||0), active:false, joinedAt:nowIso, leftAt:nowIso, finishRank:null
-      }))
+      status:'closed', seatOrder: participantsNew.map(x => x.playerId), equilibriumConfirmed:true, cashConfirmed:true,
+      participants: participantsNew
     });
   }
   // Gespielte Hände samt Aktionsverlauf aus dem Serverprotokoll in die gespeicherten Hände übernehmen
@@ -1303,7 +1398,7 @@ async function reallyCloseOnlineTable(){
     ensureClubDefaults();
     if(!currentClub.hands) currentClub.hands = [];
     const pidOfSeat = {};
-    seated.forEach(x => { pidOfSeat[String(x.seat_no)] = x.player_id; });
+    planRows.forEach(r => { pidOfSeat[String(r.seat)] = r.playerId; });
     (hist || []).forEach((row, idx) => {
       const h = onlineHistoryRowToHand(row, idx + 1, session.id, pidOfSeat);
       if(h){ currentClub.hands.push(h); handsSaved++; }
@@ -1317,7 +1412,7 @@ async function reallyCloseOnlineTable(){
   // Protokoll: wer hat den Tisch geschlossen, und sass er selbst am Tisch?
   const closedBy = {
     userId: currentUser ? currentUser.id : null, email: currentUser ? currentUser.email : null, at: nowIso,
-    wasSeated: seated.some(x => currentUser && x.user_id === currentUser.id)
+    wasSeated: tbl.seats.some(x => currentUser && x.user_id === currentUser.id)
   };
   session.closedBy = closedBy;
   if(!currentClub.activityLog) currentClub.activityLog = [];
@@ -1586,7 +1681,7 @@ function renderOnlineTableViewInner(){
   // SQL-Funktion) — funktioniert jetzt für 2 bis seat_count Sitze, nicht mehr nur Heads-up.
   const stackedSeats = seatedRows.filter(s => Number(s.stack || 0) > 0 && !s.sitting_out);
   const canStart = !isFinished && (!hs || phase === 'done' || phase === 'waiting') && stackedSeats.length >= 2;
-  const canClose = isClubAdmin() && !isFinished && (!hs || phase === 'done' || phase === 'waiting') && seatedRows.length >= 2 && seatedRows.every(s => s.player_id);
+  const canClose = isClubAdmin() && !isFinished && (!hs || phase === 'done' || phase === 'waiting') && (seatedRows.length >= 1 || (hs && hs.hand_no > 0));
 
   const myBet = hs && hs.bets ? (hs.bets[String(onlineMySeat)] || 0) : 0;
   const currentMaxBet = hs && hs.bets ? Math.max(0, ...Object.values(hs.bets).map(Number)) : 0;
