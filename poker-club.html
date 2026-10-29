@@ -4946,6 +4946,7 @@ function renderOnlineSessionDetail(s){
         <button class="btn btn-secondary" style="width:100%;margin-top:14px;" onclick="goToHandsForSession('${s.id}')">${t('btn_go_to_hands')}</button>
       ` : `
         <p class="lede" style="margin-top:0;">Spieler setzen sich am Tisch, die Karten werden automatisch verteilt. Buy-ins und Endstände kommen direkt vom Tisch — keine Chip- oder Kassenzählung nötig.</p>
+        ${onlineLiveRowsHtml(s)}
         <button class="btn btn-primary" style="width:100%;font-size:15px;" onclick="openOnlineSessionTable('${s.id}')">🌐 Zum Online-Tisch</button>
         ${isClubAdmin() ? `<button class="btn btn-secondary" style="width:100%;margin-top:10px;" onclick="closeOnlineSessionFromDetail('${s.id}')">Session beenden &amp; Ergebnis übernehmen</button>` : ''}
       `}
@@ -4956,6 +4957,23 @@ function renderOnlineSessionDetail(s){
       <p class="lede" style="margin:0;">Berechnet aus den Online-Ergebnissen, wer wem wie viel schuldet.</p>
     </div>` : ''}
   `;
+}
+let onlineLiveLoadedFor = null;
+function onlineLiveRowsHtml(s){
+  const tbl = (onlineTables || []).find(x => x.id === s.onlineTableId);
+  if(!tbl){
+    if(onlineLiveLoadedFor !== s.id){ onlineLiveLoadedFor = s.id; Promise.resolve(loadOnlineTables()).then(() => render()); }
+    return '';
+  }
+  const seated = tbl.seats.filter(x => x.user_id);
+  if(!seated.length) return '<p class="lede" style="font-size:12px;">Aktuell sitzt niemand am Tisch.</p>';
+  return '<div style="margin-bottom:12px;"><div style="font-size:12px;color:var(--ink-soft);margin-bottom:6px;">Aktuell am Tisch (live)</div>' + seated.map(x => {
+    const pl = getPlayer(x.player_id);
+    const buy = Number(x.buyin_total || 0), st = Number(x.stack || 0), net = Math.round((st - buy) * 100) / 100;
+    return `<div class="participant-row">${pl ? avatarHtml(pl) : '<div></div>'}
+      <div><div class="p-name">${escapeHtml(pl ? fullName(pl) : (x.user_email || 'Unbekannt'))}</div><div class="p-status">Buy-in ${formatMoney(buy)} · Stack ${formatMoney(st)}</div></div><div></div>
+      <div><div class="p-net ${net>0?'pos':(net<0?'neg':'zero')}" style="text-align:right;">${formatMoney(net)}</div></div></div>`;
+  }).join('') + '</div>';
 }
 function openOnlineSessionTable(sessionId){
   handsSelectedSessionId = sessionId;
