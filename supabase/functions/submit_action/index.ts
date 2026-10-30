@@ -203,34 +203,28 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Optimistischer Schreibschutz: nur anwenden, wenn seit dem Lesen niemand
-    // anders geschrieben hat.
-    const { data: written, error: updateErr } = await admin
-      .from('online_hand_state')
-      .update({
-        phase: newState.phase, board: newState.board, deck: newState.deck, pot: newState.pot,
-        current_seat: newState.current_seat, bets: newState.bets, acted: newState.acted,
-        folded: newState.folded, all_in: newState.all_in, contributions: newState.contributions,
-        last_raise_size: newState.last_raise_size, last_aggressor: newState.last_aggressor,
-        ...(hasActionsCol ? { actions: actionLog } : {}),
-        ...(hasDeadlineCol ? { turn_deadline: handEndsNow ? null : new Date(Date.now() + (nextSitOut ? 0 : TURN_MS + GRACE_MS)).toISOString() } : {}),
-        updated_at: new Date().toISOString(),
-      })
-      .eq('table_id', table_id)
-      .eq('updated_at', stateRow.updated_at)
-      .select()
-      .maybeSingle();
-    if (updateErr) return json({ error: updateErr.message }, 500);
-    if (!written) return json({ error: 'state_changed_meanwhile', retry: true }, 409);
-
-    for (const seatNo of seatOrder) {
-      if (newStacks[seatNo] !== seats[seatNo].stack) {
-        await admin.from('online_seats').update({ stack: newStacks[seatNo] }).eq('table_id', table_id).eq('seat_no', seatNo);
-      }
-    }
-
-    // Wer sein Zeitlimit überschreitet, ist ausgesetzt, bis er "Ich bin wieder da" drückt
-    if (timedOutSeat !== null) await admin.from('online_seats').update({ sitting_out: true }).eq('table_id', table_id).eq('seat_no', timedOutSeat);
+    // Alle Schreibzugriffe (Zustand, Stacks, Protokoll, Sit-out) passieren am Ende in EINER Transaktion
+    // (SQL-Funktion apply_hand_result, siehe chipmate_online_atomic_hand.sql) — optimistisch geschützt über updated_at.
+    const statePatch: Record<string, unknown> = {
+      phase: newState.phase, board: newState.board, deck: newState.deck, pot: newState.pot,
+      current_seat: newState.current_seat, bets: newState.bets, acted: newState.acted,
+      folded: newState.folded, all_in: newState.all_in, contributions: newState.contributions,
+      last_raise_size: newState.last_raise_size, last_aggressor: newState.last_aggressor,
+      actions: actionLog,
+      turn_deadline: handEndsNow ? null : new Date(Date.now() + (nextSitOut ? 0 : TURN_MS + GRACE_MS)).toISOString(),
+    };
+    const stackWrites: Record<string, number> = {};
+    for (const seatNo of seatOrder) stackWrites[String(seatNo)] = newStacks[seatNo] ?? seats[seatNo].stack;
+    let historyRow: Record<string, unknown> | null = null;
+    const commit = async (): Promise<Response | null> => {
+      const { data: ok, error: rpcErr } = await admin.rpc('apply_hand_result', {
+        p_table_id: table_id, p_expected_updated_at: stateRow.updated_at, p_state: statePatch, p_stacks: stackWrites,
+        p_history: historyRow, p_sit_out_seat: timedOutSeat,
+      });
+      if (rpcErr) { console.error('apply_hand_result failed', rpcErr); return json({ error: rpcErr.message }, 500); }
+      if (!ok) return json({ error: 'state_changed_meanwhile', retry: true }, 409);
+      return null;
+    };
 
     let handFinished = false;
     let payouts: Record<string, number> = {};
@@ -282,9 +276,7 @@ Deno.serve(async (req) => {
         const base = newStacks[sn] ?? seats[sn].stack;
         const finalStack = Math.round((base + amt + delta) * 100) / 100;
         chipsAfter += finalStack;
-        if (amt > 0.0001 || Math.abs(delta) > 0.0001) {
-          await admin.from('online_seats').update({ stack: finalStack }).eq('table_id', table_id).eq('seat_no', sn);
-        }
+        stackWrites[String(sn)] = finalStack;
       }
       chipsAfter = Math.round(chipsAfter * 100) / 100;
       if (Math.abs(chipsAfter - chipsBefore) > 0.005) console.error('CHIP MISMATCH', { table_id, hand_no: stateRow.hand_no, chipsBefore, chipsAfter, payouts });
@@ -294,7 +286,7 @@ Deno.serve(async (req) => {
       const uncontested = seatOrder.filter(sn => !(newState.folded || {})[String(sn)]).length === 1;
       const revealedHoleCards: Record<string, string[]> = {};
       for (const s of revealSeats) revealedHoleCards[s] = stateRow.hole_cards[String(s)];
-      await admin.from('online_hand_history').insert({
+      historyRow = {
         table_id, hand_no: stateRow.hand_no,
         summary: {
           board: newState.board, revealed_hole_cards: revealedHoleCards, payouts, phase_ended: newState.phase,
@@ -304,8 +296,10 @@ Deno.serve(async (req) => {
           start_stacks: Object.fromEntries(seatOrder.map(sn => [String(sn), (newStacks[sn] ?? seats[sn].stack) + Number((newState.contributions || {})[String(sn)] || 0)])),
           pot_total: Object.values(newState.contributions || {}).reduce((a: number, b) => a + Number(b), 0),
         },
-      });
-      await admin.from('online_hand_state').update({ phase: 'done', pot: 0, revealed_hole_cards: revealedHoleCards }).eq('table_id', table_id);
+      };
+      statePatch.phase = 'done'; statePatch.pot = 0; statePatch.revealed_hole_cards = revealedHoleCards;
+      const failEnd = await commit();
+      if (failEnd) return failEnd;
 
       const publicChannel = admin.channel(`table:${table_id}:public`);
       await publicChannel.send({
@@ -321,6 +315,8 @@ Deno.serve(async (req) => {
         },
       });
     } else {
+      const failMid = await commit();
+      if (failMid) return failMid;
       const publicChannel = admin.channel(`table:${table_id}:public`);
       await publicChannel.send({
         type: 'broadcast', event: 'state',
