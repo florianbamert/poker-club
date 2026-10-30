@@ -45,9 +45,41 @@ Deno.serve(async (req) => {
 
     // Schutz gegen doppeltes Starten (z.B. wenn beide Clients automatisch die nächste Hand anstossen):
     // nur starten, wenn keine Hand läuft und — falls angegeben — die erwartete Hand die letzte war.
-    const { data: cur } = await admin.from('online_hand_state').select('phase, hand_no').eq('table_id', table_id).maybeSingle();
+    const { data: cur } = await admin.from('online_hand_state').select('*').eq('table_id', table_id).maybeSingle();
     if (cur && cur.phase && !['done', 'waiting'].includes(cur.phase)) return json({ ok: true, skipped: 'hand_running' });
     if (cur && expected_hand_no != null && Number(cur.hand_no) !== Number(expected_hand_no)) return json({ ok: true, skipped: 'already_started' });
+
+    // Selbstheilung: Eine Hand, die als beendet markiert ist, aber nie ins Protokoll kam (Server brach beim Abschluss ab),
+    // hat ihre Blinds/Einsätze nie ausgezahlt. Dann werden die Einsätze zurückerstattet und die Hand als "annulliert" vermerkt.
+    if (cur && cur.phase === 'done' && Number(cur.hand_no) > 0 && Date.now() - Date.parse(cur.updated_at) > 5000) {
+      const { data: hh } = await admin.from('online_hand_history').select('id').eq('table_id', table_id).eq('hand_no', cur.hand_no).maybeSingle();
+      if (!hh) {
+        const contrib = (cur.contributions || {}) as Record<string, number>;
+        const startStacks: Record<string, number> = {};
+        const refund: Record<string, number> = {};
+        for (const sn of (cur.seat_order || []) as number[]) {
+          const c = Number(contrib[String(sn)] || 0);
+          const { data: srow } = await admin.from('online_seats').select('stack').eq('table_id', table_id).eq('seat_no', sn).maybeSingle();
+          if (!srow) continue;
+          const stackNow = Number(srow.stack);
+          startStacks[String(sn)] = Math.round((stackNow + c) * 100) / 100;
+          if (c > 0) {
+            refund[String(sn)] = c;
+            await admin.from('online_seats').update({ stack: Math.round((stackNow + c) * 100) / 100 }).eq('table_id', table_id).eq('seat_no', sn);
+          }
+        }
+        const total = Object.values(refund).reduce((a, b) => a + b, 0);
+        await admin.from('online_hand_history').insert({
+          table_id, hand_no: cur.hand_no,
+          summary: {
+            voided: true, board: cur.board || [], revealed_hole_cards: {}, payouts: refund, phase_ended: 'voided',
+            actions: cur.actions || [], seat_order: cur.seat_order, dealer_seat: cur.dealer_seat, contributions: contrib,
+            start_stacks: startStacks, pot_total: total, chips_before: total, chips_after: total,
+          },
+        });
+        console.error('HAND VOIDED (nicht abgeschlossen)', { table_id, hand_no: cur.hand_no, refund });
+      }
+    }
 
     const { error: dealErr } = await admin.rpc('deal_hand', { p_table_id: table_id });
     if (dealErr) return json({ error: dealErr.message }, 400);

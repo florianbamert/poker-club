@@ -1407,6 +1407,7 @@ function confirmCloseOnlineTable(){
 // Eine Zeile aus online_hand_history in das Hand-Format der Handerfassung umwandeln (damit Hände-Tab und Replay funktionieren)
 function onlineHistoryRowToHand(row, handNumber, sessionId, pidOfSeat){
   const sm = row.summary || {};
+  if(sm.voided) return null;   // annullierte Hand (Einsätze wurden zurückerstattet)
   const pid = (seatNo) => pidOfSeat[String(seatNo)] || null;
   const seatOrder = Array.isArray(sm.seat_order) ? sm.seat_order : Object.keys(sm.payouts || {}).map(Number);
   const seats = seatOrder.map(pid).filter(Boolean);
